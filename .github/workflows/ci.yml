@@ -12,8 +12,9 @@ permissions:
 
 jobs:
   verify:
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    outputs:
+      publish_ready: ${{ steps.readiness.outputs.ready }}
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v4
@@ -27,9 +28,16 @@ jobs:
       - run: pnpm test
       - run: pnpm build
       - run: pnpm pack:check
+      - name: Check npm initialization
+        id: readiness
+        if: github.event_name != 'pull_request'
+        run: node scripts/publish-readiness.mjs
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   publish:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.verify.outputs.publish_ready == 'true'
+    needs: verify
     runs-on: ubuntu-latest
     concurrency:
       group: pi-extensions-npm-publish
@@ -57,6 +65,10 @@ jobs:
       - run: pnpm build
       - name: Verify archives and publish changed packages in dependency order
         run: pnpm release
+        env:
+          # Temporary credential for the first publication only. Existing
+          # packages use OIDC once npm Trusted Publishing is configured.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Sync confirmed release versions to main
         run: |
           pnpm install --lockfile-only --ignore-scripts

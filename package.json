@@ -6,8 +6,8 @@
   "scripts": {
     "build": "pnpm -r --filter './packages/**' build",
     "dev": "pnpm --parallel --filter './packages/**' dev",
-    "check": "pnpm -r --filter './packages/**' check",
-    "test": "node --test scripts/*.test.mjs && pnpm -r --filter './packages/**' test",
+    "check": "pnpm --filter @chengzhiyi/pi-web-protocol build && pnpm -r --filter './packages/**' check",
+    "test": "pnpm --filter @chengzhiyi/pi-web-protocol build && node --test scripts/*.test.mjs && pnpm -r --filter './packages/**' test",
     "pack:check": "node scripts/pack.mjs",
     "release:plan": "node scripts/publish.mjs --plan",
     "release:prepare": "node scripts/publish.mjs --prepare",

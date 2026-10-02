@@ -53,6 +53,9 @@ npm run check && npm test && npm run build
 仓库为 `chengzhiyi/pi-extensions`，工作流为 `.github/workflows/ci.yml`。
 PR 执行类型检查、测试、构建、打包检查及独立目录安装测试；合入 `main` 后，
 同样的检查通过才发布。Actions 页面也可手动运行该工作流，重试失败的发布。
+`pnpm check` 与 `pnpm test` 会先构建协议包，确保干净检出不依赖残留的 `dist`。
+尚未建立 npm 包且没有首次发布凭据时，完整校验仍然执行，发布任务等待初始化，
+并在 Actions 警告和摘要中列出待初始化的包。
 
 发布脚本比较当前源码指纹与 npm `latest` 中保存的 `piRelease.fingerprint`：
 
@@ -85,7 +88,9 @@ pnpm release:plan
 1. 将代码推送到 `chengzhiyi/pi-extensions`，允许 GitHub Actions 写入 `main`。
    分支规则若禁止机器人直接写入，需要为该工作流配置允许写入的规则。
 2. 在 npm 拥有 `@chengzhiyi` scope 下两个包的发布权限。尚未建立的包需先完成
-   一次人工发布；可以用下面的命令准备经过验证的归档，再由 npm 登录用户按
+   一次认证发布：可临时在本仓库配置具有创建包权限及绕过 2FA 权限的
+   **`NPM_TOKEN` GitHub Actions secret**，手动运行工作流完成首次发布；
+   或用下面的命令准备经过验证的归档，再由 npm 登录用户按
    **协议、计划插件**的顺序执行 `npm publish <归档路径> --access public`：
 
    ```sh
@@ -102,6 +107,7 @@ pnpm release:plan
    `chengzhiyi`、仓库 `pi-extensions`、工作流文件名 **`ci.yml`**；不设置
    Environment，并允许直接 `npm publish`。工作流使用 GitHub-hosted runner、
    Node 24、npm 11 和 OIDC，无需保存 npm 发布 token。
+   若使用过临时 `NPM_TOKEN`，配置好 Trusted Publishing 后删除它。
 4. 在 Actions 中手动运行工作流，或将包改动合入 `main`。
 
 发布归档只包含构建后的 JS/CSS、协议类型声明、包说明及许可证，不包含源码、
@@ -109,7 +115,8 @@ source map、测试或截图。`pnpm pack:check` 可在本地执行相同的独�
 
 `pi-webapp` 的 CI 会在 `npm ci` 前解析已发布的协议 `latest`，更新为准确版本
 并生成对应的 npm 锁文件；宿主发布时将这些变化同步回自己的 `main`。因此协议
-必须先公开发布。后续协议发布不会主动触发另一个仓库的工作流；在 pi-webapp
+必须先公开发布才能发布宿主；初始化之前，宿主校验使用固定提交的协议源码。
+后续协议发布不会主动触发另一个仓库的工作流；在 pi-webapp
 下一次 PR 或 `main` 构建时解析新协议并检查兼容性。
 
 用户安装已发布的包：
