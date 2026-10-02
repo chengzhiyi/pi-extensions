@@ -1,0 +1,63 @@
+{
+  "name": "@chengzhiyi/pi-plan-mode",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi-webapp"
+  ],
+  "pi": {
+    "extensions": [
+      "./dist/extension.js"
+    ]
+  },
+  "piWebapp": {
+    "apiVersion": 1,
+    "client": "./dist/client.js",
+    "style": "./dist/client.css"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "NOTICE.txt"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "node scripts/build.mjs --watch",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "node scripts/build.mjs && node --experimental-strip-types --test test/*.test.ts test/*.test.mjs"
+  },
+  "dependencies": {
+    "@chengzhiyi/pi-web-protocol": "workspace:*",
+    "clsx": "^2.1.1",
+    "mdast-util-from-markdown": "^2.0.3",
+    "mdast-util-gfm": "^3.1.0",
+    "micromark-extension-gfm": "^3.0.0",
+    "micromark-core-commonmark": "^2.0.3",
+    "micromark-util-character": "^2.1.1",
+    "micromark-util-classify-character": "^2.0.1",
+    "micromark-util-symbol": "^2.0.1"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "react": ">=18",
+    "typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.87.1",
+    "@types/node": "22.19.19",
+    "@types/react": "^18.3.1",
+    "esbuild": "^0.28.2",
+    "react": "^18.3.1",
+    "typebox": "1.3.27",
+    "typescript": "7.0.2",
+    "@types/mdast": "^4.0.4",
+    "micromark-util-types": "^2.0.2"
+  }
+}

@@ -1,0 +1,11 @@
+.icon {
+  color: var(--plan-document-icon-color, var(--plan-document-default-color));
+}
+
+.markdown {
+  --plan-document-default-color: var(--dsw-static-blue-500);
+}
+
+.other {
+  --plan-document-default-color: var(--dsw-static-neutral-bluish-300);
+}

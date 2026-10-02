@@ -1,0 +1,12 @@
+{
+  "name": "pi-extensions",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.18.1",
+  "scripts": {
+    "build": "pnpm -r --filter './packages/**' build",
+    "dev": "pnpm --parallel --filter './packages/**' dev",
+    "check": "pnpm -r --filter './packages/**' check",
+    "test": "pnpm -r --filter './packages/**' test"
+  }
+}
