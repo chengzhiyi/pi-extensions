@@ -32,4 +32,6 @@ Web 预览支持多标签、分栏、浮动、全屏、收起；文档由宿主�
 - `src/ui/`：计划徽章、文档卡片、预览、审批与提问组件。
 - `src/ui/primitives/`：按钮、状态点、文档图标与 Markdown 摘要。
 
-React、文档渲染与主题令牌由宿主提供，布局使用宿主的 `--piw-*` 变量。许可声明随包包含在 `NOTICE.txt` 中。
+React、文档渲染与主题令牌由宿主提供，布局使用宿主的 `--piw-*` 变量。许可声明随包包含在 `LICENSE` 中。
+部分 UI 原语与 Markdown 处理代码源自 MIT 许可的
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)，对应版权声明保留在 `LICENSE` 中。

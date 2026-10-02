@@ -21,12 +21,12 @@ const sharedReact = {
 
 const server = {
   entryPoints: ["src/extension.ts"], outfile: "dist/extension.js", bundle: true,
-  format: "esm", platform: "node", target: "node22", sourcemap: true,
+  format: "esm", platform: "node", target: "node22", sourcemap: "external",
   external: ["@earendil-works/*", "typebox"],
 };
 const client = {
   entryPoints: ["src/client.tsx"], outdir: "dist", entryNames: "client", bundle: true,
-  format: "esm", platform: "browser", target: "es2022", sourcemap: true,
+  format: "esm", platform: "browser", target: "es2022", sourcemap: "external",
   jsx: "transform", jsxFactory: "React.createElement", jsxFragment: "React.Fragment",
   plugins: [sharedReact],
 };

@@ -3,6 +3,12 @@
   "version": "0.1.0",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chengzhiyi/pi-extensions.git",
+    "directory": "packages/plan-mode"
+  },
+  "publishConfig": { "access": "public" },
   "keywords": [
     "pi-package",
     "pi-webapp"
@@ -18,9 +24,11 @@
     "style": "./dist/client.css"
   },
   "files": [
-    "dist",
+    "dist/extension.js",
+    "dist/client.js",
+    "dist/client.css",
     "README.md",
-    "NOTICE.txt"
+    "LICENSE"
   ],
   "scripts": {
     "build": "node scripts/build.mjs",

@@ -5,7 +5,8 @@ Pi 扩展与 pi-webapp 浏览器 UI 的 pnpm 工作区。首批包：
 - [`@chengzhiyi/pi-web-protocol`](packages/protocol/README.md)：版本化清单、浏览器贡献声明、会话动作与等待用户决定的交互协议。
 - [`@chengzhiyi/pi-plan-mode`](packages/plan-mode/README.md)：Pi 只读计划模式，提供计划徽章、审批卡、交互式提问和文档预览。
 
-要求 Node.js 22.19+、pnpm 10.18.1 和相邻目录中的 `pi-webapp`。根项目保持私有；目前不发布 npm。
+要求 Node.js 22.19+、pnpm 10.18.1。联合开发使用相邻目录中的 `pi-webapp`。
+根项目保持私有；协议包和计划插件通过 GitHub Actions 独立发布到 npm。
 
 ## 联合开发
 
@@ -47,9 +48,76 @@ npm run check && npm test && npm run build
 
 计划审批、交互式提问与恢复操作见 [计划模式 README](packages/plan-mode/README.md)。源码版与已安装旧版宿主按扩展路径隔离进程状态，以支持开发热重载。
 
-## 发布顺序
+## 自动发布
 
-本阶段的 `pi-webapp` 以本地 `file:` 开发依赖引用协议包，其扩展和 Web 产物会打包所需协议运行时代码。**发布 pi-webapp 前**，先在 npm 建立或确认 `@chengzhiyi` scope，发布协议包；将 pi-webapp 中的 `file:` 依赖改为明确版本，并在与 `pi-extensions` 无关的独立检出中完成 `npm ci`、测试和构建。计划模式包随后单独发布。
+仓库为 `chengzhiyi/pi-extensions`，工作流为 `.github/workflows/ci.yml`。
+PR 执行类型检查、测试、构建、打包检查及独立目录安装测试；合入 `main` 后，
+同样的检查通过才发布。Actions 页面也可手动运行该工作流，重试失败的发布。
+
+发布脚本比较当前源码指纹与 npm `latest` 中保存的 `piRelease.fingerprint`：
+
+| 改动 | 发布行为 |
+| --- | --- |
+| 仅计划插件源码或包内文档变化 | 仅发布计划插件 |
+| 协议源码或包内文档变化 | 先发布协议，再发布依赖新协议的计划插件 |
+| 仓库级 README、测试、验收产物变化 | 运行检查，不发布 |
+| 共享锁文件或依赖配置变化 | 保守地重发两个受影响的包 |
+
+首次发布使用源码版本。之后默认递增补丁版本；如需 minor 或 major，先修改
+对应包的 `version`。`workspace:*` 在源码中保留，`pnpm pack` 会将它转换为
+本次选定的准确协议版本。包内 README、许可证、构建配置与源码属于指纹输入；
+版本和发布回执不属于输入，因此同步版本不会触发循环发布。
+
+发布任务排队串行执行，取得执行机会后检出最新 `main`。所有归档先通过独立
+安装验证，再按依赖顺序发布；每次发布都查询 npm 确认版本和指纹。两个包发布
+到一半失败、或发布成功后 Git 同步失败时，可重跑工作流：已成功的包会被识别，
+无需再发布新版本。成功后通过 `GITHUB_TOKEN` 将包版本、回执和锁文件同步回
+`main`；这个令牌产生的推送不会触发新的工作流。
+
+只检查发布计划，不修改文件或发布：
+
+```sh
+pnpm release:plan
+```
+
+### 首次启用
+
+1. 将代码推送到 `chengzhiyi/pi-extensions`，允许 GitHub Actions 写入 `main`。
+   分支规则若禁止机器人直接写入，需要为该工作流配置允许写入的规则。
+2. 在 npm 拥有 `@chengzhiyi` scope 下两个包的发布权限。尚未建立的包需先完成
+   一次人工发布；可以用下面的命令准备经过验证的归档，再由 npm 登录用户按
+   **协议、计划插件**的顺序执行 `npm publish <归档路径> --access public`：
+
+   ```sh
+   pnpm install --frozen-lockfile
+   pnpm check
+   pnpm test
+   pnpm build
+   pnpm release:prepare
+   ```
+
+   `release:prepare` 会更新包版本与回执并将归档放入被忽略的 `artifacts/release/`，
+   不执行发布。发布后提交包清单变化，或由后续工作流自动同步。
+3. 在两个 npm 包的 Trusted Publisher 设置中分别配置 GitHub 用户
+   `chengzhiyi`、仓库 `pi-extensions`、工作流文件名 **`ci.yml`**；不设置
+   Environment，并允许直接 `npm publish`。工作流使用 GitHub-hosted runner、
+   Node 24、npm 11 和 OIDC，无需保存 npm 发布 token。
+4. 在 Actions 中手动运行工作流，或将包改动合入 `main`。
+
+发布归档只包含构建后的 JS/CSS、协议类型声明、包说明及许可证，不包含源码、
+source map、测试或截图。`pnpm pack:check` 可在本地执行相同的独立安装验证。
+
+`pi-webapp` 的 CI 会在 `npm ci` 前解析已发布的协议 `latest`，更新为准确版本
+并生成对应的 npm 锁文件；宿主发布时将这些变化同步回自己的 `main`。因此协议
+必须先公开发布。后续协议发布不会主动触发另一个仓库的工作流；在 pi-webapp
+下一次 PR 或 `main` 构建时解析新协议并检查兼容性。
+
+用户安装已发布的包：
+
+```sh
+pi install npm:pi-webapp
+pi install npm:@chengzhiyi/pi-plan-mode
+```
 
 ## 插件生命周期
 

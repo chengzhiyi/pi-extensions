@@ -7,6 +7,13 @@
     "build": "pnpm -r --filter './packages/**' build",
     "dev": "pnpm --parallel --filter './packages/**' dev",
     "check": "pnpm -r --filter './packages/**' check",
-    "test": "pnpm -r --filter './packages/**' test"
+    "test": "node --test scripts/*.test.mjs && pnpm -r --filter './packages/**' test",
+    "pack:check": "node scripts/pack.mjs",
+    "release:plan": "node scripts/publish.mjs --plan",
+    "release:prepare": "node scripts/publish.mjs --prepare",
+    "release": "node scripts/publish.mjs --publish"
+  },
+  "devDependencies": {
+    "jsdom": "26.1.0"
   }
 }
