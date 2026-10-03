@@ -71,3 +71,17 @@ test('registry treats only missing packages as first releases and fails closed o
   await assert.rejects(readPublishedPackage('@test/protocol', async () => new Response('', { status: 401 })), /401/);
   await assert.rejects(readPublishedPackage('@test/protocol', async () => Response.json({ versions: {} })), /latest/i);
 });
+
+test('release lookup revalidates metadata instead of accepting a cached pre-publication 404', async () => {
+  const metadata = { 'dist-tags': { latest: '0.1.0' }, versions: {
+    '0.1.0': { version: '0.1.0', piRelease: { fingerprint: 'confirmed' } },
+    '0.1.1': { version: '0.1.1' },
+  } };
+  const result = await readPublishedPackage('@test/protocol', async url => {
+    const query = new URL(url).searchParams;
+    return query.has('release-check') ? Response.json(metadata) : new Response('', { status: 404 });
+  });
+  assert.equal(result?.version, '0.1.0');
+  assert.equal(result?.highestVersion, '0.1.1');
+  assert.equal(result?.piRelease.fingerprint, 'confirmed');
+});

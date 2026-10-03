@@ -1,12 +1,33 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { publishInOrder, runRelease } from './publish.mjs';
+import { confirmPublication, publishInOrder, runRelease } from './publish.mjs';
 
 const plan = [
   { name: 'protocol', version: '0.1.1', fingerprint: 'protocol', publish: true },
   { name: 'plugin', version: '0.1.1', fingerprint: 'plugin', publish: true },
 ];
 const receipt = item => ({ version: item.version, piRelease: { fingerprint: item.fingerprint } });
+
+test('publication confirmation waits for asynchronous registry processing', async () => {
+  let elapsed = 0;
+  const result = await confirmPublication(plan[0], {
+    lookup: async () => elapsed < 240000 ? null : receipt(plan[0]),
+    wait: async ms => { elapsed += ms; },
+  });
+  assert.deepEqual(result, receipt(plan[0]));
+  assert.equal(elapsed, 240000);
+});
+
+test('publication confirmation is bounded and rejects a different receipt', async () => {
+  let elapsed = 0;
+  const result = await confirmPublication(plan[0], {
+    lookup: async () => ({ version: '0.1.1', piRelease: { fingerprint: 'other' } }),
+    wait: async ms => { elapsed += ms; },
+    attempts: 3,
+  });
+  assert.equal(result, null);
+  assert.equal(elapsed, 30000);
+});
 
 test('failed protocol publication prevents dependent publication', async () => {
   const published = [];

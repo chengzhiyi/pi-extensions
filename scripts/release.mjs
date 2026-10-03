@@ -52,7 +52,11 @@ export function planReleases(packages, published) {
 }
 
 export async function readPublishedPackage(name, request = fetch) {
-  const response = await request(`https://registry.npmjs.org/${encodeURIComponent(name)}`, { signal: AbortSignal.timeout(30000) });
+  // npm edges can retain the 404 from before a first publish, or an older
+  // version list. Release planning and confirmation must see fresh metadata.
+  const url = new URL(`https://registry.npmjs.org/${encodeURIComponent(name)}`);
+  url.searchParams.set('release-check', String(Date.now()));
+  const response = await request(url.href, { signal: AbortSignal.timeout(30000), headers: { 'Cache-Control': 'no-cache' } });
   if (response.status === 404) return null;
   if (!response.ok) throw new Error(`Registry lookup failed for ${name}: HTTP ${response.status}`);
   const metadata = await response.json();

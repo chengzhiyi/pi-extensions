@@ -12,6 +12,17 @@ function matches(item, published) {
   return published?.version === item.version && published.piRelease?.fingerprint === item.fingerprint;
 }
 
+export async function confirmPublication(item, { lookup = readPublishedPackage, wait = setTimeout, attempts = 60 } = {}) {
+  // npm accepts a publish before asynchronous processing exposes its metadata.
+  // Poll up to 60 times, 15 seconds apart; never advance without the exact receipt.
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const current = await lookup(item.name);
+    if (matches(item, current)) return current;
+    if (attempt < attempts - 1) await wait(15000);
+  }
+  return null;
+}
+
 export async function publishInOrder(plan, publish, confirm) {
   for (const item of plan.filter(item => item.publish)) {
     let failure;
@@ -54,14 +65,7 @@ export async function runRelease(mode, root = process.cwd()) {
   const archives = new Map(tarballs.map(item => [item.name, item.path]));
   await publishInOrder(plan, item => {
     execFileSync('npm', ['publish', archives.get(item.name), '--access', 'public', '--tag', 'latest'], { cwd: root, stdio: 'inherit' });
-  }, async item => {
-    for (let attempt = 0; attempt < 12; attempt++) {
-      const current = await readPublishedPackage(item.name);
-      if (matches(item, current)) return current;
-      if (attempt < 11) await setTimeout(2000);
-    }
-    return null;
-  });
+  }, item => confirmPublication(item));
   console.log('All planned publications confirmed; manifests are ready to sync to main');
   return plan;
 }
