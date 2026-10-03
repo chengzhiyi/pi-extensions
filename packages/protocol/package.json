@@ -8,13 +8,23 @@
     "url": "git+https://github.com/chengzhiyi/pi-extensions.git",
     "directory": "packages/protocol"
   },
-  "publishConfig": { "access": "public" },
+  "publishConfig": {
+    "access": "public"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
   },
-  "files": ["dist/*.js", "dist/*.d.ts", "README.md", "LICENSE"],
+  "files": [
+    "dist/*.js",
+    "dist/*.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsc -p tsconfig.json --watch",
@@ -26,12 +36,20 @@
     "react": ">=18"
   },
   "peerDependenciesMeta": {
-    "@earendil-works/pi-coding-agent": { "optional": true },
-    "react": { "optional": true }
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.87.1",
     "@types/react": "^18.3.1",
     "typescript": "7.0.2"
+  },
+  "piRelease": {
+    "source": "5474016145012c2a3922b9bd8e80e5b5a7f66db1",
+    "fingerprint": "53d678ba28f7f24eb04814558c5015b1186f6cc5d0dd4ce8644b7af95ecef745"
   }
 }

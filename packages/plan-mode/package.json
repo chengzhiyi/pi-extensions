@@ -8,7 +8,9 @@
     "url": "git+https://github.com/chengzhiyi/pi-extensions.git",
     "directory": "packages/plan-mode"
   },
-  "publishConfig": { "access": "public" },
+  "publishConfig": {
+    "access": "public"
+  },
   "keywords": [
     "pi-package",
     "pi-webapp"
@@ -67,5 +69,9 @@
     "typescript": "7.0.2",
     "@types/mdast": "^4.0.4",
     "micromark-util-types": "^2.0.2"
+  },
+  "piRelease": {
+    "fingerprint": "b5687b20d54120cf9bf653ba570c7bddee269a71fb4ce220dfb941a2f1b0dd4b",
+    "source": "5474016145012c2a3922b9bd8e80e5b5a7f66db1"
   }
 }
