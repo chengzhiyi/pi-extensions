@@ -40,7 +40,11 @@ async function handle(method: string, input: any) {
     case "initialize":
       if (mount) throw new Error("Already initialized");
       if (!input || !["controller", "workspace", "editor", "tool"].includes(input.kind) || typeof input.sessionId !== "string" || !["zh", "en"].includes(input.locale) || !["light", "dark"].includes(input.theme)) throw new Error("Invalid mount");
-      mount = input; render(); return contribution;
+      mount = input; render();
+      // Complete initialization with an actual status from this realm, not a host
+      // assumption or a timer race. Unknown registrations remain fail-closed.
+      await hostCall("changed", {...modelStatus(), busy: busy()});
+      return contribution;
     case "update":
       if (!mount) throw new Error("Not initialized");
       if (input?.sessionId && input.sessionId !== mount.sessionId) throw new Error("Session cannot change");
