@@ -30,7 +30,21 @@ test("unavailable models retain hand edits and backups, stop polling, and do not
     channel.port2.postMessage({type:"response",id:message.id,ok:true,value:current});
   });
   const messageText = () => message;
+  // Same-origin localStorage keys are intentionally identical to the old builtin.
+  const backup = { ...emptyScene(), elements: [{ id: "backup", type: "rectangle", x: 800, y: 30, width: 100, height: 100 }] };
+  storage.set("pi-diagram:recovery-test:old", JSON.stringify(backup));
   const old = diagramModel("recovery-test", "old"); await old.refresh();
+  assert.deepEqual(old.getSnapshot().recovered, backup);
+  assert.deepEqual(old.getSnapshot().scene, emptyScene()); // never silently replace the server scene
+  assert.equal(storage.get("pi-diagram:recovery-test:old"), JSON.stringify(backup));
+  old.restore(); await old.flush();
+  assert.deepEqual(drafts.get("old")!.scene, backup);
+  storage.set("pi-diagram:recovery-test:missing-old-id", JSON.stringify(backup));
+  const missing = new DiagramModel("recovery-test", "missing-old-id"); await missing.refresh();
+  assert.equal(missing.getSnapshot().unavailable, true);
+  assert.equal(missing.getSnapshot().scene, null);
+  assert.deepEqual(missing.recoveryScene(), backup);
+  assert.equal(requests.some(r => r.id === "missing-old-id" && r.action !== "get"), false);
   const scene = { ...emptyScene(), elements: [{ id: "manual", type: "rectangle", x: 120, y: 30, width: 200, height: 100 }] };
   old.change(scene); drafts.delete("old"); await assert.rejects(old.flush(), /Gone/);
   assert.equal(old.getSnapshot().unavailable, true); assert.equal(old.getSnapshot().unsynced, true);
@@ -39,7 +53,7 @@ test("unavailable models retain hand edits and backups, stop polling, and do not
   const live = diagramModel("recovery-test", "live"); await live.refresh(); live.change(scene);
   await flushDiagramModels("recovery-test");
   assert.equal(live.getSnapshot().unsynced, false); assert.equal(old.getSnapshot().unsynced, true);
-  assert.equal(requests.filter(r => r.action === "sync" && r.id === "old").length, 1);
+  assert.equal(requests.filter(r => r.action === "sync" && r.id === "old").length, 2);
   assert.equal(storage.has("pi-diagram:recovery-test:old"), true);
   // An unmaterialized old candidate must not keep trying to initialize a dead ID from preview polling.
   drafts.set("pending", { ...draft("pending"), candidate: { id: "candidate", baseRevision: 0, elements: [{ id: "node", type: "rectangle", x: 0, y: 0 }] } });

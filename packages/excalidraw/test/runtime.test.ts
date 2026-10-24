@@ -56,6 +56,10 @@ test('workspace broker enforces expected hash/no replace and rejects unsafe path
   f.files.set('existing.excalidraw',{text:'{}',hash:'b'.repeat(64)});
   await assert.rejects(r.invoke(invocation('save',{id:a.id,revision:0,path:'existing.excalidraw'})), /File conflict/);
   assert.equal(f.files.get('existing.excalidraw').text, '{}');
+  f.files.set('invalid.excalidraw',{text:'{broken',hash:'b'.repeat(64)});
+  await assert.rejects(r.invoke(invocation('open',{path:'invalid.excalidraw'})),/JSON|Expected/);
+  f.files.set('executable.excalidraw',{text:JSON.stringify({...emptyScene(),elements:[{id:'bad',type:'iframe',x:0,y:0,width:100,height:100}]}),hash:'b'.repeat(64)});
+  await assert.rejects(r.invoke(invocation('open',{path:'executable.excalidraw'})));
 });
 test('legacy is validated then CAS imported once; corrupt and unsupported records never clear data', async () => {
   const f = fixture({drafts:[],focused:null}); const r = await createRuntime({pluginId:'excalidraw',version:'0.1.0',generation:7,broker:f.broker});
@@ -66,4 +70,26 @@ test('legacy is validated then CAS imported once; corrupt and unsupported record
   await assert.rejects(r.invoke(invocation('list')), /Unsupported/);
   const bad = fixture({drafts:[{}],focused:null}); const b = await createRuntime({pluginId:'excalidraw',version:'0.1.0',generation:7,broker:bad.broker});
   await assert.rejects(b.invoke(invocation('list'))); assert.equal(bad.states.size, 0);
+});
+
+test('legacy migration preserves exact IDs, geometry, stale candidate, focus, saved revision and disk hash across restart', async () => {
+  const scene = {...emptyScene(), elements:[{id:'hand',type:'rectangle',x:999,y:30,width:200,height:100,groupIds:['核心层']}]};
+  const draft = {id:'historical',title:'旧图稿',scene,revision:7,savedRevision:5,path:'图稿/原稿.excalidraw',diskHash:'b'.repeat(64),candidate:{id:'stale',baseRevision:6,patch:{removeIds:['removed-before-migration']}}};
+  const legacy = {drafts:[draft],focused:draft.id};
+  const original = structuredClone(legacy), f = fixture(legacy);
+  const options = {pluginId:'excalidraw',version:'0.1.0',generation:7,broker:f.broker};
+  let runtime = await createRuntime(options);
+  assert.deepEqual(await runtime.invoke(invocation('get',{id:draft.id})),draft);
+  assert.deepEqual(f.states.get('a').value,original);
+  assert.equal(f.states.get('a').revision,1);
+  await runtime.dispose?.(); runtime = await createRuntime(options);
+  assert.equal((await runtime.invoke(invocation('read',{},'tool')) as any).id,draft.id);
+  await assert.rejects(runtime.invoke(invocation('accept',{id:draft.id,revision:7,candidateId:'stale',scene})),/旧图稿/);
+  assert.deepEqual(f.states.get('a').value,original);
+  await runtime.invoke(invocation('reject',{id:draft.id,revision:7,candidateId:'stale'}));
+  assert.equal(f.states.get('a').value.drafts[0].revision,7);
+  assert.equal(f.states.get('a').value.drafts[0].candidate,null);
+  assert.equal(f.calls.filter(c=>c.method==='legacy.read').length,1);
+  assert.equal(f.calls.filter(c=>c.method.startsWith('workspace.')).length,0);
+  assert.deepEqual(legacy,original); // no native file or legacy-source rewrite during import
 });

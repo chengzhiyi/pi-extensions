@@ -1,0 +1,50 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { DiagramStore } from "../src/server/store.ts";
+import { brokerFiles } from "../src/server/files.ts";
+import { emptyScene, type DiagramDraft } from "../src/contract/diagrams.ts";
+const disk = new Map<string, {text:string;hash:string}>();
+const files = brokerFiles({async call(method, input: any) {
+  if (method === "workspace.read") return disk.get(input.path) ?? null;
+  assert.equal(method,"workspace.commit");
+  assert.equal(disk.get(input.path)?.hash ?? null,input.expectedHash);
+  const hash = createHash("sha256").update(input.text).digest("hex");
+  disk.set(input.path,{text:input.text,hash}); return {hash};
+}});
+const scene = () => ({ ...emptyScene(), elements: [{ id: "input", type: "rectangle", x: 20, y: 30, width: 200, height: 100 }, { id: "text", type: "text", text: "手动修改", containerId: "input", x: 40, y: 50, width: 100, height: 30 }] });
+const graph = { nodes: [{ id: "input", label: "输入验证码" }, { id: "check", label: "验证通过？", kind: "decision" }, { id: "success", label: "登录成功" }], edges: [{ id: "e1", from: "input", to: "check" }, { id: "e2", from: "check", to: "success", label: "是" }, { id: "e3", from: "check", to: "input", label: "否，重试" }] };
+
+test("diagram store separates sessions, protects hand edits and requires explicit candidate acceptance", async t => {
+  const cwd = await mkdtemp(join(tmpdir(), "pi-diagram-store-")); t.after(() => rm(cwd, { recursive: true, force: true }));
+  const store = new DiagramStore(files), guard = () => {};
+  const result = store.tool(cwd, "a", "create", { title: "登录流程", graph }) as { id: string; status: string };
+  assert.equal(result.status, "pending_canvas_acceptance");
+  assert.equal(store.list(cwd, "b").length, 0);
+  assert.throws(() => store.tool(cwd, "b", "read", { id: result.id }), /当前会话/);
+  let draft = await store.action(cwd, "a", "get", { id: result.id }, guard) as DiagramDraft;
+  assert.equal(draft.scene.elements.length, 0);
+  await assert.rejects(store.action(cwd, "a", "save", { id: draft.id, revision: 0, path: "diagrams/a.excalidraw" }, guard), /候选/);
+  draft = await store.action(cwd, "a", "accept", { id: draft.id, revision: 0, candidateId: draft.candidate!.id, scene: scene() }, guard) as DiagramDraft;
+  assert.equal(draft.revision, 1);
+  store.tool(cwd, "a", "patch", { id: draft.id, baseRevision: 1, patch: { addNodes: [{ id: "new", label: "新增分支" }] } });
+  const before = structuredClone(draft.scene);
+  draft = await store.action(cwd, "a", "get", { id: draft.id }, guard) as DiagramDraft;
+  assert.deepEqual(draft.scene, before);
+  draft = await store.action(cwd, "a", "sync", { id: draft.id, revision: 1, scene: { ...scene(), elements: scene().elements.map(e => ({ ...e, x: e.x + 100 })) } }, guard) as DiagramDraft;
+  await assert.rejects(store.action(cwd, "a", "accept", { id: draft.id, revision: 2, candidateId: draft.candidate!.id, scene: emptyScene() }, guard), /旧图稿/);
+  draft = await store.action(cwd, "a", "reject", { id: draft.id, revision: 2, candidateId: draft.candidate!.id }, guard) as DiagramDraft;
+  assert.equal(draft.scene.elements[0]?.x, 120);
+  assert.throws(() => store.tool(cwd, "a", "patch", { id: draft.id, baseRevision: 1, patch: { removeIds: ["input"] } }), /修订/);
+  draft = await store.action(cwd, "a", "save", { id: draft.id, revision: 2, path: "diagrams/a.excalidraw" }, guard) as DiagramDraft;
+  assert.equal(draft.savedRevision, 2);
+  assert.deepEqual((await files.read(draft.path)).scene, draft.scene);
+  const newStore = new DiagramStore(files);
+  const restored = await newStore.action(cwd, "a", "open", { path: draft.path }, guard) as DiagramDraft;
+  assert.deepEqual(restored.scene, draft.scene);
+  assert.equal(restored.diskHash, draft.diskHash);
+});
+
