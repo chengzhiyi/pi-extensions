@@ -145,7 +145,7 @@ export function DiagramPreview({ sessionId, id, title, locale, open, header, col
     <div id={bodyId} hidden={collapsed}>
     <div className={css.previewViewport} data-diagram-preview>
       {image && !state.unavailable ? <img src={image} alt={title} data-scene-revision={renderedKey} /> : <div className={css.previewPlaceholder}>{state.unavailable ? t("此历史图稿没有可用内容。", "No content is available for this historical drawing.") : error || state.error || "Excalidraw…"}</div>}
-      {!state.unavailable && <button className={css.editButton} onClick={open} aria-label={t("编辑 Excalidraw", "Edit Excalidraw")}>{t("编辑 ↗", "Edit ↗")}</button>}
+      {state.unavailable ? <button onClick={open}>{t("恢复选项", "Recovery options")}</button> : <button className={css.editButton} onClick={open} aria-label={t("编辑 Excalidraw", "Edit Excalidraw")}>{t("编辑 ↗", "Edit ↗")}</button>}
     </div>
     {candidate && !initial && !state.unavailable && <div className={css.review} role="status"><span>{stale ? t("修改已过期，原图已保留", "Edits are stale; original preserved") : t("AI 修改预览", "AI edit preview")}</span>
       <button disabled={stale || state.busy} onClick={() => void accept()}>{t("应用修改", "Apply edits")}</button><button disabled={state.busy} onClick={() => void model.mutate("reject").catch(e => setError(String(e)))}>{t("保留原图", "Keep original")}</button>

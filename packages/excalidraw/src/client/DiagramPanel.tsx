@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { WorkbenchPanelProps } from "./ui.tsx";
 import type { DiagramDraft } from "../contract/diagrams.ts";
 import { diagramAction } from "./api.ts";
-import { diagramModel, type DiagramModel } from "./model.ts";
+import { diagramModel } from "./model.ts";
 import css from "./diagrams.module.css";
 type CanvasModule = typeof import("./Canvas.tsx");
 const downloads = new Map<string, ReturnType<typeof setTimeout>>();
@@ -28,20 +28,31 @@ export function DiagramEditor(p: WorkbenchPanelProps) {
 }
 function DiagramEditorRoute(p: WorkbenchPanelProps) {
   const [replacement, setReplacement] = useState<string | null>(null), [error, setError] = useState("");
-  const [attempt, setAttempt] = useState(0);
   const model = diagramModel(p.session.sessionId, replacement ?? p.contentId);
   const state = useSyncExternalStore(model.subscribe, model.getSnapshot);
-  const pending = useRef<{ model: DiagramModel; work: Promise<DiagramDraft> } | null>(null);
-  useEffect(() => {
-    if (!state.unavailable || !p.visible) return;
-    let active = true;
-    // One request per missing model, including StrictMode effect replay and polling refreshes.
-    if (pending.current?.model !== model) pending.current = { model, work: diagramAction<DiagramDraft>(p.session.sessionId, "new", {}) };
-    void pending.current.work.then(draft => { if (active) { setError(""); setReplacement(draft.id); } }).catch(e => { if (active) setError(errorText(e)); });
-    return () => { active = false; };
-  }, [model, state.unavailable, p.visible, p.session.sessionId, attempt]);
-  if (state.unavailable) return <div role="status">{error || (p.locale === "zh" ? "正在打开空白 Excalidraw…" : "Opening a blank Excalidraw…")}
-    {error && <button onClick={() => { pending.current = null; setError(""); setAttempt(value => value + 1); }}>{p.locale === "zh" ? "重试" : "Retry"}</button>}
+  const pending = useRef(false);
+  const [busy, setBusy] = useState(false);
+  const t = (zh: string, en: string) => p.locale === "zh" ? zh : en;
+  const backup = state.unavailable ? model.recoveryScene() : null;
+  const recover = async (useBackup: boolean) => {
+    if (pending.current) return;
+    pending.current = true; setBusy(true); setError("");
+    try {
+      const scene = useBackup ? model.recoveryScene() : null;
+      if (useBackup && !scene) throw new Error(t("本地备份不可用", "Local backup unavailable"));
+      // Recovery always requires an explicit click and a new identity. Never fabricate the
+      // unavailable historical scene or consume/delete its only local source.
+      const draft = await diagramAction<DiagramDraft>(p.session.sessionId, scene ? "import" : "new", scene ? { scene, title: t("恢复的本地备份", "Recovered local backup") } : {});
+      setReplacement(draft.id);
+    } catch (e) { setError(errorText(e)); }
+    finally { pending.current = false; setBusy(false); }
+  };
+  if (state.unavailable) return <div role="status">
+    <p>{t("此历史图稿没有可靠的最新内容；不会自动创建替代图稿。", "No reliable latest content is available for this historical drawing. No replacement is created automatically.")}</p>
+    {backup && <><button disabled={busy} onClick={() => download(new Blob([JSON.stringify(backup)], { type: "application/json" }), `${p.contentId}-backup.excalidraw`)}>{t("下载本地备份", "Download local backup")}</button>
+      <button disabled={busy} onClick={() => void recover(true)}>{t("将备份恢复为新图稿", "Restore backup as new drawing")}</button></>}
+    <button disabled={busy} onClick={() => void recover(false)}>{t("创建新的空白图稿", "Create new blank drawing")}</button>
+    {error && <p role="alert">{error}</p>}
   </div>;
   return <NativeDiagramEditor {...p} key={model.id} contentId={model.id} />;
 }
