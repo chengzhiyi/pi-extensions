@@ -59,7 +59,7 @@ export interface HostedFrameHandshake {
   mountId: string;
 }
 export interface HostedRpcRequest { type: "request"; id: string; method: string; input?: unknown }
-export interface HostedRpcResponse { type: "response"; id: string; ok: boolean; value?: unknown; error?: { code: string; message: string } }
+export interface HostedRpcResponse { type: "response"; id: string; ok: boolean; value?: unknown; error?: { code: string; message: string; status?: number; reason?: string } }
 export type HostedRpcMessage = HostedRpcRequest | HostedRpcResponse;
 export interface HostedViewMount {
   kind: "controller" | "workspace" | "editor" | "tool";

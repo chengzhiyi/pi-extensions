@@ -1,0 +1,40 @@
+{
+  "name": "@chengzhiyi/pi-excalidraw",
+  "version": "0.1.0",
+  "description": "Self-contained hosted v2 Excalidraw plugin for pi-webapp",
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/runtime.js",
+  "files": ["dist", "LICENSE", "NOTICE.txt", "README.md"],
+  "piWebapp": {
+    "apiVersion": 2,
+    "hostRange": ">=0.1.0",
+    "runtimeProtocol": 1,
+    "backend": {"entry": "./dist/runtime.js"},
+    "frontend": {"document": "./dist/frame.html", "controller": "./dist/frame.html"},
+    "resourcesManifest": "./dist/resources.json",
+    "dataSchemaVersion": 1,
+    "supportedDataSchemas": [1],
+    "capabilities": ["state", "workspace", "legacy", "panels", "messages"]
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "tsc --noEmit",
+    "test": "node --experimental-transform-types --test test/*.test.ts",
+    "verify": "node scripts/verify.mjs",
+    "test:browser": "node test/frame.browser.mjs",
+    "test:independent": "node scripts/independent-build.mjs"
+  },
+  "devDependencies": {
+    "@chengzhiyi/pi-web-protocol": "0.1.0",
+    "@excalidraw/excalidraw": "0.18.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "@types/react": "18.3.1",
+    "@types/react-dom": "18.3.0",
+    "@types/node": "22.19.19",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2",
+    "@playwright/test": "1.63.0"
+  }
+}

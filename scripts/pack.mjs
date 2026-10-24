@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -8,12 +9,36 @@ import { readWorkspace } from './workspace.mjs';
 
 export function validatePackedPackage(tarball, expected, versions) {
   const files = execFileSync('tar', ['-tf', tarball], { encoding: 'utf8' }).trim().split('\n');
-  assert(files.every(file => file.endsWith('/') || /^package\/(package\.json|README\.md|LICENSE|NOTICE\.txt|dist\/[^/]+\.(js|css|d\.ts))$/.test(file)), `Unexpected files in ${expected.name}`);
   const manifest = JSON.parse(execFileSync('tar', ['-xOf', tarball, 'package/package.json'], { encoding: 'utf8' }));
+  const allowed = new Set(['package/package.json', 'package/README.md', 'package/LICENSE', 'package/NOTICE.txt']);
+  if (manifest.piWebapp?.apiVersion === 2) {
+    const resourcePath = manifest.piWebapp.resourcesManifest;
+    assert(/^\.\/dist\/[\w.-]+\.json$/.test(resourcePath), 'Invalid resources manifest');
+    const resourceFile = `package/${resourcePath.slice(2)}`;
+    allowed.add(resourceFile);
+    const resources = JSON.parse(execFileSync('tar', ['-xOf', tarball, resourceFile], {encoding: 'utf8'}));
+    assert.equal(resources.version, 1);
+    assert(Array.isArray(resources.files) && resources.files.length <= 4096);
+    for (const item of resources.files) {
+      assert(/^\.\/dist\/(?:[\w.-]+\/)*[\w.-]+\.(?:js|css|html|json|woff2?|ttf|txt)$/.test(item.path) && !item.path.split('/').slice(1).some(p => p === '.' || p === '..'), 'Uncontrolled resource');
+      const path = `package/${item.path.slice(2)}`;
+      assert(!allowed.has(path), 'Duplicate resource'); allowed.add(path);
+      const bytes = execFileSync('tar', ['-xOf', tarball, path], {maxBuffer: 64 * 1024 * 1024});
+      assert.equal(bytes.length, item.bytes, `Resource size mismatch: ${path}`);
+      assert.equal(createHash('sha256').update(bytes).digest('hex'), item.sha256, `Resource hash mismatch: ${path}`);
+    }
+  }
+  if (manifest.piWebapp?.apiVersion === 2) {
+    const listing = execFileSync('tar', ['-tvf', tarball], {encoding: 'utf8'}).trim().split('\n');
+    assert(listing.every(line => /^[d-]/.test(line)), 'Links and special archive members are forbidden');
+    assert(files.filter(path => path.endsWith('/')).every(path => [...allowed].some(file => file.startsWith(path))), 'Uncontrolled archive directory');
+  }
+  assert.equal(new Set(files).size, files.length, 'Duplicate tar members');
+  assert(files.every(file => file.endsWith('/') || allowed.has(file) || (manifest.piWebapp?.apiVersion !== 2 && /^package\/dist\/[^/]+\.(js|css|d\.ts)$/.test(file))), `Unexpected files in ${expected.name}`);
   assert.equal(manifest.name, expected.name);
   assert.equal(manifest.version, expected.version);
   assert(files.includes('package/LICENSE'), `Missing license in ${expected.name}`);
-  const entrypoints = [manifest.main, manifest.types, ...(manifest.pi?.extensions ?? []), manifest.piWebapp?.client, manifest.piWebapp?.style].filter(Boolean);
+  const entrypoints = [manifest.main, manifest.types, ...(manifest.pi?.extensions ?? []), manifest.piWebapp?.client, manifest.piWebapp?.style, manifest.piWebapp?.backend?.entry, manifest.piWebapp?.frontend?.document, manifest.piWebapp?.frontend?.controller, manifest.piWebapp?.resourcesManifest].filter(Boolean);
   for (const entry of entrypoints) assert(files.includes(`package/${entry.replace(/^\.\//, '')}`), `Missing entrypoint ${entry}`);
   for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies', 'devDependencies']) {
     for (const [name, version] of Object.entries(manifest[field] ?? {})) {

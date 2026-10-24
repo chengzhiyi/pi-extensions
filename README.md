@@ -4,6 +4,7 @@ Pi 扩展与 pi-webapp 浏览器 UI 的 pnpm 工作区。首批包：
 
 - [`@chengzhiyi/pi-web-protocol`](packages/protocol/README.md)：版本化清单、浏览器贡献声明、会话动作与等待用户决定的交互协议。
 - [`@chengzhiyi/pi-plan-mode`](packages/plan-mode/README.md)：Pi 只读计划模式，提供计划徽章、审批卡、交互式提问和文档预览。
+- [`@chengzhiyi/pi-excalidraw`](packages/excalidraw/README.md)：托管 v2 外置画布，独立 React iframe、broker 状态/CAS/文件保存、受控字体与资源清单。离线独立构建及 tgz 验证命令见包内 README；仍需 v2 宿主集成，不能用旧 v1 客户端加载器加载。
 
 要求 Node.js 22.19+、pnpm 10.18.1。联合开发使用相邻目录中的 `pi-webapp`。
 根项目保持私有；协议包和计划插件通过 GitHub Actions 独立发布到 npm。
