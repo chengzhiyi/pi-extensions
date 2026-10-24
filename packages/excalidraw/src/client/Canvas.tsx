@@ -10,6 +10,9 @@ export { materialize } from "./scene-adapter.ts";
 
 import { useDiagramTheme } from "./theme.ts";
 
+function viewport(scene: DiagramScene) {
+  return { viewBackgroundColor: scene.appState.viewBackgroundColor, scrollX: scene.appState.scrollX ?? 0, scrollY: scene.appState.scrollY ?? 0, zoom: { value: (scene.appState.zoom?.value ?? 1) as NormalizedZoomValue } };
+}
 function native(scene: DiagramScene) { return restoreElements(scene.elements as unknown as ExcalidrawElement[], null); }
 export async function thumbnail(scene: DiagramScene, dark = false) {
   await document.fonts.ready;
@@ -33,7 +36,7 @@ export default function Canvas({ scene, readOnly, locale, onChange, onError }: {
       const ids = new Set(lastValid.current.elements.filter(e => !e.isDeleted).map(e => e.id));
       const added = scene.elements.some(e => !e.isDeleted && !ids.has(e.id));
       last.current = fingerprint; lastValid.current = scene;
-      api.updateScene({ elements: native(scene), appState: scene.appState, captureUpdate: CaptureUpdateAction.IMMEDIATELY });
+      api.updateScene({ elements: native(scene), appState: viewport(scene), captureUpdate: CaptureUpdateAction.IMMEDIATELY });
       // Reveal newly accepted AI content that may be outside the old viewport. Native hand edits
       // already update last.current in onChange, so dragging/typing never triggers this refit.
       if (added) {
@@ -45,28 +48,28 @@ export default function Canvas({ scene, readOnly, locale, onChange, onError }: {
   useEffect(() => {
     // Fitting an empty canvas zooms to the native maximum. Start blank drawings at
     // 100%; only fit existing content, without magnifying small drawings above 100%.
-    if (!api || !scene.elements.some(e => !e.isDeleted)) return;
+    if (!api || scene.appState.zoom || scene.appState.scrollX !== undefined || scene.appState.scrollY !== undefined || !scene.elements.some(e => !e.isDeleted)) return;
     let second = 0;
     const first = requestAnimationFrame(() => { second = requestAnimationFrame(() => api.scrollToContent(native(scene), { fitToViewport: true, maxZoom: 1 })); });
     return () => { cancelAnimationFrame(first); cancelAnimationFrame(second); };
   }, [api]);
-  const change = (elements: readonly OrderedExcalidrawElement[], background: string) => {
+  const change = (elements: readonly OrderedExcalidrawElement[], appState: DiagramScene["appState"]) => {
     if (readOnly) return;
     try {
-      const value = validateScene({ ...scene, elements, appState: { viewBackgroundColor: background } });
+      const value = validateScene({ ...scene, elements, appState });
       const fingerprint = JSON.stringify(value);
       if (fingerprint !== last.current) { last.current = fingerprint; lastValid.current = value; onChange(value); }
     } catch (error) {
       onError(error instanceof Error ? error.message : String(error));
       // Unsupported drops/shortcuts must not leave a different, unsaveable picture on screen.
-      queueMicrotask(() => api?.updateScene({ elements: native(lastValid.current), appState: { ...lastValid.current.appState, fileHandle: null }, captureUpdate: CaptureUpdateAction.NEVER }));
+      queueMicrotask(() => api?.updateScene({ elements: native(lastValid.current), appState: { ...viewport(lastValid.current), fileHandle: null }, captureUpdate: CaptureUpdateAction.NEVER }));
     }
   };
-  return <Excalidraw excalidrawAPI={setApi} initialData={{ elements: native(scene), appState: { ...scene.appState, currentItemFontFamily: 5, zoom: { value: 1 as NormalizedZoomValue } }, scrollToContent: false }}
+  return <Excalidraw excalidrawAPI={setApi} initialData={{ elements: native(scene), appState: { ...viewport(scene), currentItemFontFamily: 5 }, scrollToContent: false }}
     langCode={locale === "zh" ? "zh-CN" : "en"} theme={theme} viewModeEnabled={readOnly} aiEnabled={false} validateEmbeddable={false} handleKeyboardGlobally={false}
     onLinkOpen={(_e, event) => event.preventDefault()} onPaste={() => false}
     UIOptions={{ canvasActions: { export: { saveFileToDisk: true }, toggleTheme: false }, tools: { image: false } }}
-    onChange={(elements, state) => { setCanvasBusy(!!(state.editingTextElement || state.resizingElement || state.newElement || state.multiElement || state.isRotating)); change(elements, state.viewBackgroundColor); }}>
+    onChange={(elements, state) => { setCanvasBusy(!!(state.editingTextElement || state.resizingElement || state.newElement || state.multiElement || state.isRotating)); change(elements, { viewBackgroundColor: state.viewBackgroundColor, zoom: { value: state.zoom.value }, scrollX: state.scrollX, scrollY: state.scrollY }); }}>
     <MainMenu>
       <MainMenu.DefaultItems.LoadScene />
       <MainMenu.DefaultItems.SaveToActiveFile />

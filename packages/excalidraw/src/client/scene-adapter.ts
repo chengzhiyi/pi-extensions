@@ -115,12 +115,21 @@ export function materialize(base: DiagramScene, candidate: Candidate): DiagramSc
       const generated = convert([{ ...shape, text: label ?? shape.text, originalText: label ?? shape.originalText ?? shape.text, autoResize: false } as unknown as ExcalidrawElementSkeleton])[0]!;
       elements = elements.map(e => e.id === shape.id ? generated : e); continue;
     }
-    const oldText = elements.find(e => e.type === "text" && e.containerId === shape.id);
-    const generated = convert([{ ...shape, label: { id: oldText?.id, text: label ?? oldText?.originalText ?? oldText?.text ?? "", fontSize: "fontSize" in properties ? properties.fontSize : typeof oldText?.fontSize === "number" ? oldText.fontSize : 20, fontFamily: typeof oldText?.fontFamily === "number" ? oldText.fontFamily : 5,
+    const oldText = elements.find(e => !e.isDeleted && e.type === "text" && e.containerId === shape.id);
+    const text = label ?? oldText?.originalText ?? oldText?.text ?? "";
+    // Native bare shapes (and explicit label removal) need no generated text. The
+    // converter intentionally omits empty labels; do not invent a bound text ID.
+    if (text === "") {
+      elements = elements.filter(e => e.id !== oldText?.id).map(e => e.id === shape.id ? { ...shape,
+        boundElements: Array.isArray(shape.boundElements) ? shape.boundElements.filter(b => (b as { type: string }).type !== "text") : [],
+      } : e);
+      continue;
+    }
+    const generated = convert([{ ...shape, label: { id: oldText?.id, text, fontSize: "fontSize" in properties ? properties.fontSize : typeof oldText?.fontSize === "number" ? oldText.fontSize : 20, fontFamily: typeof oldText?.fontFamily === "number" ? oldText.fontFamily : 5,
       textAlign: oldText?.textAlign, verticalAlign: oldText?.verticalAlign } } as unknown as ExcalidrawElementSkeleton]);
-    const newText = generated.find(e => e.type === "text")!;
-    elements = elements.filter(e => e.id !== oldText?.id).map(e => e.id === shape.id ? { ...shape, width: generated.find(n => n.id === shape.id)!.width, height: generated.find(n => n.id === shape.id)!.height, boundElements: [...(Array.isArray(shape.boundElements) ? shape.boundElements.filter(b => (b as { id: string }).id !== oldText?.id) : []), { id: newText.id, type: "text" }] } : e);
-    elements.push({ ...newText, ...(oldText ? { id: oldText.id, fontFamily: oldText.fontFamily } : {}) });
+    const newText = generated.find(e => e.type === "text");
+    elements = elements.filter(e => e.id !== oldText?.id).map(e => e.id === shape.id ? { ...shape, width: generated.find(n => n.id === shape.id)!.width, height: generated.find(n => n.id === shape.id)!.height, boundElements: [...(Array.isArray(shape.boundElements) ? shape.boundElements.filter(b => (b as { id: string }).id !== oldText?.id) : []), ...(newText ? [{ id: newText.id, type: "text" }] : [])] } : e);
+    if (newText) elements.push({ ...newText, ...(oldText ? { id: oldText.id, fontFamily: oldText.fontFamily } : {}) });
   }
   // Only reroute arrows incident to explicitly moved/resized shapes; unrelated native paths stay intact.
   const affected = elements.filter(e => e.type === "arrow" && [e.startBinding, e.endBinding].some(b => b && moved.has((b as { elementId: string }).elementId)) && e.startBinding && e.endBinding);

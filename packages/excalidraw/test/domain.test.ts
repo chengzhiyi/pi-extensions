@@ -24,6 +24,16 @@ test("diagram wire validation rejects duplicate IDs, missing endpoints, executab
   assert.throws(() => validatePatch({ removeIds: ["missing"] }, scene()), /不存在/);
 });
 
+test("schema-1 scenes retain only finite bounded viewport fields and allow shape label removal", () => {
+  const appState = { viewBackgroundColor: "#fff", zoom: { value: 0.6, secret: true }, scrollX: -200, scrollY: 1000000, selectedElementIds: { input: true } };
+  assert.deepEqual(validateScene({ ...scene(), appState }).appState, { viewBackgroundColor: "#fff", zoom: { value: 0.6 }, scrollX: -200, scrollY: 1000000 });
+  assert.deepEqual(validateScene(scene()).appState, emptyScene().appState);
+  for (const zoom of [null, 1, {}, { value: NaN }, { value: Infinity }, { value: 0.09 }, { value: 30.01 }]) assert.throws(() => validateScene({ ...scene(), appState: { zoom } }), /视口/);
+  for (const key of ["scrollX", "scrollY"]) for (const value of [NaN, Infinity, -Infinity, 1000001, -1000001, "0", null]) assert.throws(() => validateScene({ ...scene(), appState: { [key]: value } }), /视口/);
+  assert.equal(validatePatch({ updateElements: [{ id: "input", label: "" }] }, scene()).updateElements?.[0]?.label, "");
+  assert.throws(() => validatePatch({ updateNodes: [{ id: "input", label: "" }] }, scene()));
+});
+
 test("native frames round-trip without permitting web embeds or invalid frame references", () => {
   const framed = { ...scene(), elements: [{ id: "frame", type: "frame", x: 0, y: 0, width: 500, height: 500, name: "核心层" }, ...scene().elements.map(e => ({ ...e, frameId: "frame" }))] };
   assert.deepEqual(validateScene(framed).elements, framed.elements);

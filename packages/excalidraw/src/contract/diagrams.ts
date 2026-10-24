@@ -10,7 +10,7 @@ export interface DiagramElementUpdate extends DiagramStyle { id: string; label?:
 export interface DiagramGraph { nodes: DiagramNode[]; edges: DiagramEdge[]; layout?: "top-down" | "left-right" }
 export interface DiagramPatch { addNodes?: DiagramNode[]; addEdges?: DiagramEdge[]; updateNodes?: { id: string; label: string }[]; updateElements?: DiagramElementUpdate[]; removeIds?: string[] }
 export interface SceneElement { id: string; type: string; x: number; y: number; width: number; height: number; isDeleted?: boolean; text?: string; containerId?: string | null; customData?: Record<string, unknown>; [key: string]: unknown }
-export interface DiagramScene { type: "excalidraw"; version: 2; source: string; elements: SceneElement[]; appState: { viewBackgroundColor: string }; files: Record<string, never> }
+export interface DiagramScene { type: "excalidraw"; version: 2; source: string; elements: SceneElement[]; appState: { viewBackgroundColor: string; zoom?: { value: number }; scrollX?: number; scrollY?: number }; files: Record<string, never> }
 export interface Candidate { id: string; baseRevision: number; graph?: DiagramGraph; patch?: DiagramPatch; elements?: Record<string, unknown>[] }
 export interface DiagramDraft { id: string; title: string; revision: number; scene: DiagramScene; path: string | null; diskHash: string | null; savedRevision: number | null; candidate: Candidate | null }
 export type DiagramSummary = Pick<DiagramDraft, "id" | "title" | "revision" | "path" | "savedRevision"> & { pending: boolean };
@@ -98,7 +98,7 @@ export function validatePatch(value: unknown, scene: DiagramScene): DiagramPatch
     if (!record(item)) fail("元素修改无效");
     const id = identifier(item.id), element = live.find(e => e.id === id);
     if (!element || patch.removeIds!.includes(id) || patch.updateNodes!.some(n => n.id === id)) fail("待修改元素不存在或操作重复");
-    const update = { id, ...geometry(item), ...style(item), ...(item.label === undefined ? {} : { label: label(item.label) }) };
+    const update = { id, ...geometry(item), ...style(item), ...(item.label === undefined ? {} : { label: item.label === "" && element.type !== "text" ? "" : label(item.label) }) };
     if (Object.keys(update).length === 1) fail("元素修改为空");
     if (!["rectangle", "ellipse", "diamond", "text"].includes(element.type)) fail("此类型不支持直接修改，请修改其端点或重建连线");
     if (element.containerId) fail("请修改文本所属的图形，保持绑定一致");
@@ -209,5 +209,16 @@ export function validateScene(value: unknown): DiagramScene {
   unique(ids);
   const app = record(value.appState) ? value.appState : {};
   const color = typeof app.viewBackgroundColor === "string" && /^#[\da-f]{3,8}$/i.test(app.viewBackgroundColor) ? app.viewBackgroundColor : "#ffffff";
-  return { type: "excalidraw", version: 2, source: "pi-webapp", elements: structuredClone(elements), appState: { viewBackgroundColor: color }, files: {} };
+  // Optional additive schema-1 fields: old checkpoints remain valid. Never retain native
+  // collaborators, handles or selections; only bounded, finite viewport coordinates.
+  const appState: DiagramScene["appState"] = { viewBackgroundColor: color };
+  if (app.zoom !== undefined) {
+    if (!record(app.zoom) || typeof app.zoom.value !== "number" || !Number.isFinite(app.zoom.value) || app.zoom.value < 0.1 || app.zoom.value > 30) fail("视口缩放无效");
+    appState.zoom = { value: app.zoom.value };
+  }
+  for (const key of ["scrollX", "scrollY"] as const) if (app[key] !== undefined) {
+    if (typeof app[key] !== "number" || !Number.isFinite(app[key]) || Math.abs(app[key]) > 1000000) fail("视口坐标无效");
+    appState[key] = app[key];
+  }
+  return { type: "excalidraw", version: 2, source: "pi-webapp", elements: structuredClone(elements), appState, files: {} };
 }
