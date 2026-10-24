@@ -46,7 +46,11 @@ export class DiagramModel {
         this.fingerprint = JSON.stringify(draft.scene);
         this.set({ draft, scene: draft.scene, recovered, error: "" });
       } else if (draft.revision !== this.state.draft.revision) {
-        this.set({ error: "另一画布已更新此图稿；请下载本地草稿后重新载入，避免覆盖。" });
+        // Tool previews and editors are different realms. A clean observer must follow the
+        // authoritative checkpoint, not treat every edit from its sibling as a conflict.
+        // The version/busy/unsynced checks above protect local work; sync still uses CAS.
+        this.fingerprint = JSON.stringify(draft.scene);
+        this.set({ draft, scene: draft.scene, error: "" });
       } else this.set({ draft });
     } catch (error) { if (!signal?.aborted) this.failure(error); }
   }
