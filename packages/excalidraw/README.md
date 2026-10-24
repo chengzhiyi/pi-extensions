@@ -8,14 +8,21 @@ Run from this package using Node 24 (Node 22 with transform-types support also w
 
 ```sh
 node scripts/build.mjs
-node --experimental-transform-types --test test/*.test.ts
+node --experimental-transform-types --test test/*.test.ts test/*.test.mjs
 ../../node_modules/.bin/tsc --noEmit
 node test/frame.browser.mjs
 node scripts/independent-build.mjs
 node scripts/verify.mjs
+node test/csp.browser.mjs
 ```
 
 `independent-build` copies the resolved, version-checked build package closure (preserving nested versions) into `../../artifacts/independent-build`, rebuilds there and checks every esbuild input realpath remains inside that directory. It does not install packages or contact a registry. `verify` uses `pnpm pack`, validates every resource digest/size and every manifest entry, extracts the exact archive into a fixture node_modules and imports/runs its backend. No npm installation/publication is performed. A fresh registry install/frozen workspace lockfile update is not part of this offline verification.
+
+## Production CSP font policy
+
+The build uses hash-checked adapters for Excalidraw 0.18.1: complete original WOFF2 unicode-range partitions are embedded instead of running the JS/WASM glyph subsetter. This preserves glyph quality and native exports but increases SVG sizes; a console info message makes the policy explicit. The font URL adapter removes the upstream CDN fallback, requiring the local asset path. Neither dependency installations nor host CSP are modified; no `unsafe-eval` or `wasm-unsafe-eval` is required. Upstream drift fails the build for review.
+
+`test:csp` extracts the real `verify` tgz, checks every manifest digest, serves resources over HTTP with the exact production hosted-asset CSP, and exercises a Chinese tool thumbnail and native editor PNG/source downloads. It asserts byte-exact embedded partitions, browser font decoding, and zero page errors, CSP violations, console errors or external requests. The source repository's `packages/excalidraw/CSP-VERIFICATION.md` records verification and limitations (also supplied separately with the development artifact).
 
 ## Host integration contract
 
