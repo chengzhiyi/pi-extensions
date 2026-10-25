@@ -96,6 +96,37 @@ export async function verifyInstallation(root, tarballs) {
       console.log('Standalone package installation and both plugin entrypoints passed');`;
     await writeFile(join(directory, 'smoke.mjs'), smoke);
     execFileSync(process.execPath, ['smoke.mjs'], { cwd: directory, stdio: 'inherit', timeout: 30000 });
+    if (tarballs.some(item => item.name === '@chengzhiyi/pi-excalidraw')) {
+      await writeFile(join(directory, 'hosted-smoke.mjs'), `import assert from 'node:assert/strict';
+        import { readFile } from 'node:fs/promises';
+        import { createRuntime } from '@chengzhiyi/pi-excalidraw';
+        const manifest = JSON.parse(await readFile('./node_modules/@chengzhiyi/pi-excalidraw/package.json', 'utf8'));
+        assert.equal(manifest.piWebapp.apiVersion, 2);
+        let state = null;
+        const runtime = await createRuntime({pluginId: 'excalidraw', version: manifest.version, generation: 1,
+          broker: {async call(method, input) {
+            if (method === 'state.read') return structuredClone(state);
+            if (method === 'legacy.read') return null;
+            if (method === 'state.compareAndSwap') {
+              assert.equal(input.expectedRevision, state?.revision ?? 0);
+              return state = {revision: input.expectedRevision + 1, schema: input.schema, value: structuredClone(input.value)};
+            }
+            throw new Error('Unexpected broker call: ' + method);
+          }}});
+        assert.equal((await runtime.health()).ok, true);
+        assert.equal((await runtime.describe()).tools.length, 6);
+        const request = {requestId: 'archive-smoke', generation: 1, kind: 'action',
+          scope: {cwd: process.cwd(), workspaceId: 'archive', sessionId: 'archive'}, action: 'new', input: {}};
+        const draft = await runtime.invoke(request);
+        assert.equal(state.revision, 1);
+        assert.equal((await runtime.invoke({...request, action: 'get', input: {id: draft.id}})).id, draft.id);
+        await assert.rejects(runtime.invoke({...request, generation: 0}), /Stale/);
+        await runtime.dispose();
+        assert.equal((await runtime.health()).ok, false);
+        await assert.rejects(runtime.invoke(request), /disposed/);
+        console.log('Installed hosted v2 archive runtime, state CAS and lifecycle passed');`);
+      execFileSync(process.execPath, ['hosted-smoke.mjs'], { cwd: directory, stdio: 'inherit', timeout: 30000 });
+    }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

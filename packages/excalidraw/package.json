@@ -27,7 +27,7 @@
     "test:independent": "node scripts/independent-build.mjs"
   },
   "devDependencies": {
-    "@chengzhiyi/pi-web-protocol": "0.1.0",
+    "@chengzhiyi/pi-web-protocol": "workspace:*",
     "@excalidraw/excalidraw": "0.18.1",
     "react": "18.3.1",
     "react-dom": "18.3.1",
