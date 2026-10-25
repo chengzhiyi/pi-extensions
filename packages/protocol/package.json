@@ -1,6 +1,6 @@
 {
   "name": "@chengzhiyi/pi-web-protocol",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -49,7 +49,7 @@
     "typescript": "7.0.2"
   },
   "piRelease": {
-    "source": "5474016145012c2a3922b9bd8e80e5b5a7f66db1",
-    "fingerprint": "53d678ba28f7f24eb04814558c5015b1186f6cc5d0dd4ce8644b7af95ecef745"
+    "source": "5ce9efc4626176aa25d2465d87a1f6d9bfa48f09",
+    "fingerprint": "aa3f893fe91c74c7d6612c1783b4f806ef6a7bfb90f6b5d98da8654900b46e32"
   }
 }

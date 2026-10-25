@@ -5,17 +5,35 @@
   "type": "module",
   "license": "MIT",
   "main": "./dist/runtime.js",
-  "files": ["dist", "LICENSE", "NOTICE.txt", "README.md"],
+  "files": [
+    "dist",
+    "LICENSE",
+    "NOTICE.txt",
+    "README.md"
+  ],
   "piWebapp": {
     "apiVersion": 2,
     "hostRange": ">=0.1.0",
     "runtimeProtocol": 1,
-    "backend": {"entry": "./dist/runtime.js"},
-    "frontend": {"document": "./dist/frame.html", "controller": "./dist/frame.html"},
+    "backend": {
+      "entry": "./dist/runtime.js"
+    },
+    "frontend": {
+      "document": "./dist/frame.html",
+      "controller": "./dist/frame.html"
+    },
     "resourcesManifest": "./dist/resources.json",
     "dataSchemaVersion": 1,
-    "supportedDataSchemas": [1],
-    "capabilities": ["state", "workspace", "legacy", "panels", "messages"]
+    "supportedDataSchemas": [
+      1
+    ],
+    "capabilities": [
+      "state",
+      "workspace",
+      "legacy",
+      "panels",
+      "messages"
+    ]
   },
   "scripts": {
     "build": "node scripts/build.mjs",
@@ -37,5 +55,14 @@
     "esbuild": "0.28.2",
     "typescript": "7.0.2",
     "@playwright/test": "1.63.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chengzhiyi/pi-extensions.git",
+    "directory": "packages/excalidraw"
+  },
+  "piRelease": {
+    "source": "59744894fabacf5cc9ef5182fe8889f2a14f2006",
+    "fingerprint": "fbb5547bff4df89457a16f1af49a3e3476e6cdc52044b5c1d1160d3b7829cb18"
   }
 }
