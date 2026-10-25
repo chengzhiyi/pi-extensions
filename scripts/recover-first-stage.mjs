@@ -20,7 +20,8 @@ export function selectRecoveryStage(items, intent) {
   assert.equal(matches.length, 1, 'Expected exactly one matching stage; do not retry publishing');
   const item = matches[0];
   assert(stageIdPattern.test(item.id), 'Invalid stage ID');
-  assert.equal(item.status, 'pending', 'Stage must still be pending human approval');
+  // npm's queue API names the unpromoted state "staged", not "pending".
+  assert.equal(item.status, 'staged', 'Stage must still be staged for human approval');
   return item;
 }
 export function verifyRecoveryArchive(bytes, intent) {
@@ -48,8 +49,8 @@ export async function recoverFirstStage(input, destination, {
   await save('stage-list.json', items.filter(item => item.packageName === intent.name));
   const selected = selectRecoveryStage(items, intent);
   const detail = JSON.parse(await execute(['stage', 'view', selected.id, '--json'], destination));
-  assert.equal(selectRecoveryStage([detail], intent).id, selected.id);
   await save('stage-detail.json', detail);
+  assert.equal(selectRecoveryStage([detail], intent).id, selected.id);
   await execute(['stage', 'download', selected.id, '--json'], destination);
   const archives = (await readdir(destination)).filter(name => name.endsWith('.tgz'));
   assert.equal(archives.length, 1, 'Expected one downloaded stage archive');

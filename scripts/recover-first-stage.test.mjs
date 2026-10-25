@@ -9,13 +9,27 @@ const hash = (algorithm, encoding = 'hex') => createHash(algorithm).update(bytes
 const intent = { name: '@fixture/plugin', version: '0.1.0', sha256: hash('sha256'),
   integrity: `sha512-${hash('sha512', 'base64')}`, shasum: hash('sha1'), bytes: bytes.length };
 const item = { id: '01234567-0123-0123-0123-0123456789ab', packageName: intent.name,
-  version: intent.version, shasum: intent.shasum, status: 'pending' };
+  version: intent.version, shasum: intent.shasum, status: 'staged' };
 
-test('read-only recovery selects exactly one matching pending package/version/archive', () => {
+test('read-only recovery selects exactly one matching staged package/version/archive', () => {
   assert.deepEqual(selectRecoveryStage([item, { ...item, packageName: 'other' }], intent), item);
   for (const items of [[], [item, item], [{ ...item, version: '0.1.1' }], [{ ...item, shasum: 'different' }],
-    [{ ...item, id: '../unsafe' }], [{ ...item, status: 'approved' }]]) {
+    [{ ...item, id: '../unsafe' }],
+    ...['pending', 'approved', 'rejected', 'expired', 'published', undefined].map(status => [{ ...item, status }])]) {
     assert.throws(() => selectRecoveryStage(items, intent));
+  }
+});
+
+test('captured npm queue from recovery40186170880 uses staged status', async () => {
+  // Captured from the failed read-only run; actor fields omitted. Not a publication receipt.
+  const items = JSON.parse(await readFile(new URL('./fixtures/npm-stage-list-40186170880.json', import.meta.url), 'utf8'));
+  const original = { name: '@chengzhiyi/pi-excalidraw', version: '0.1.0',
+    shasum: '5f0fa9707ee95d9b5fbf33d532839cd055e92fc4' };
+  const selected = selectRecoveryStage(items, original);
+  assert.equal(selected.id, 'c4c7116e-08e0-4a4d-99c1-ebd82e0e95a0');
+  assert.equal(selected.status, 'staged');
+  for (const status of ['pending', 'approved', 'rejected', 'expired', 'published']) {
+    assert.throws(() => selectRecoveryStage([{ ...selected, status }], original));
   }
 });
 
