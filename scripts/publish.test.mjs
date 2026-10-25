@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { confirmPublication, publicationEnvironment, publishInOrder, runRelease } from './publish.mjs';
+import { assertStagingOptIn, confirmPublication, publicationEnvironment, publishInOrder, runRelease } from './publish.mjs';
 
 const plan = [
   { name: 'protocol', version: '0.1.1', fingerprint: 'protocol', publish: true },
@@ -47,6 +47,53 @@ test('a matching version without matching content is not accepted as successful'
 
 test('unchanged packages are never published', async () => {
   await publishInOrder(plan.map(item => ({ ...item, publish: false })), () => assert.fail('unexpected publish'), () => assert.fail('unexpected confirmation'));
+});
+
+test('new-name staging is opt-in and impossible on automatic push or an unchanged pending dispatch', () => {
+  assert.throws(() => assertStagingOptIn(plan, {}), /explicit workflow_dispatch/);
+  assert.throws(() => assertStagingOptIn(plan, { GITHUB_EVENT_NAME: 'push', CI_STAGE_NEW_PACKAGES: 'true' }), /explicit/);
+  assert.throws(() => assertStagingOptIn(plan, { GITHUB_EVENT_NAME: 'workflow_dispatch' }), /explicit/);
+  assert.doesNotThrow(() => assertStagingOptIn(plan, { GITHUB_EVENT_NAME: 'workflow_dispatch', CI_STAGE_NEW_PACKAGES: 'true' }));
+  assert.doesNotThrow(() => assertStagingOptIn(plan.map(item => ({ ...item, latest: receipt(item) })), {}));
+});
+
+test('first publication stages once, never confirms or publishes dependents, and returns a pending outcome', async () => {
+  const events = [];
+  const result = await publishInOrder([
+    { ...plan[0], latest: { version: '0.1.0' } }, plan[1],
+    { name: 'later-dependent', publish: true },
+  ], item => events.push(`publish:${item.name}`), item => {
+    events.push(`confirm:${item.name}`); return receipt(item);
+  }, item => {
+    events.push(`stage:${item.name}`); return { stageId: 'fixture-stage', status: 'awaiting-promotion' };
+  });
+  assert.deepEqual(events, ['publish:protocol', 'confirm:protocol', 'stage:plugin']);
+  assert.equal(result.status, 'awaiting-promotion');
+  assert.equal(result.item, 'plugin');
+});
+
+test('staging failure cannot fall back to direct publication or advance the release', async () => {
+  let stages = 0;
+  await assert.rejects(publishInOrder(plan, () => assert.fail('direct publish'), () => assert.fail('confirmation'), () => {
+    stages++; throw new Error('stage denied');
+  }), /stage denied/);
+  assert.equal(stages, 1);
+});
+
+test('after promotion, exact unchanged receipt is skipped and remaining packages retain OIDC', async () => {
+  const published = [];
+  const result = await publishInOrder([
+    { ...plan[0], publish: false, latest: receipt(plan[0]) },
+    { ...plan[1], latest: { version: '0.1.0' } },
+  ], item => published.push(item.name), receipt, () => assert.fail('restaged initialized package'));
+  assert.deepEqual(published, ['plugin']);
+  assert.deepEqual(result, { status: 'published' });
+});
+
+test('an earlier dependency failure prevents staging a new package', async () => {
+  await assert.rejects(publishInOrder([{ ...plan[0], latest: { version: '0.1.0' } }, plan[1]], () => {
+    throw new Error('protocol denied');
+  }, () => null, () => assert.fail('staged despite failed dependency')), /protocol denied/);
 });
 
 test('existing packages use tokenless OIDC without leaking or mutating bootstrap credentials', () => {
