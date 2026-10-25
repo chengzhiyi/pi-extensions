@@ -1,6 +1,7 @@
 import { build } from 'esbuild';
 import { notices } from './notices.mjs';
 import {createRequire} from 'node:module';
+import {fileURLToPath} from 'node:url';
 import {readFile, writeFile, mkdir, rm, cp, readdir} from 'node:fs/promises';
 import {dirname, join, extname} from 'node:path';
 import {createHash} from 'node:crypto';
@@ -22,6 +23,21 @@ const fontCspPlugin = {name:'excalidraw-csp-full-fonts', setup(build) {
     urlPatches++;
     return {contents:source.replace(fallback,'if(!r.length)throw new Error("Local Excalidraw font asset path is required");return r'),loader:'js'};
   });
+  let downloads = 0;
+  build.onLoad({filter:/[/\\]dist[/\\]file-save-3189631c\.js$/}, async ({path}) => {
+    if (createHash('sha256').update(await readFile(path)).digest('hex') !== '3453a5d0851d7c16c8942ad8f0411ab796c3bd7839c992ba3448591f249733ca') throw new Error('File-save fallback changed; review download adapter');
+    downloads++;
+    return {contents:`import {downloadDrawing} from './download.ts';
+      export default async function save(value, options = {}) {
+        if (Array.isArray(options)) options = options[0];
+        const blob = value instanceof Response ? await value.blob() : await value;
+        // The desktop guard accepts JSON, not the vendor alias used by upstream.
+        const output = blob.type === 'application/vnd.excalidraw+json' ? new Blob([blob], {type:'application/json'}) : blob;
+        await downloadDrawing(output, options.fileName || 'Untitled.excalidraw');
+        return null;
+      }`, resolveDir:fileURLToPath(new URL('../src/client/', import.meta.url)),loader:'js'};
+  });
+  build.onEnd(() => { if (downloads !== 1) throw new Error(`Expected one download adapter, got ${downloads}`); });
   build.onEnd(() => {if (replacements !== 1 || urlPatches !== 1) throw new Error(`Expected one font adapter and URL patch, got ${replacements}/${urlPatches}`);});
 }};
 await rm('dist', {recursive:true, force:true}); await mkdir('dist');

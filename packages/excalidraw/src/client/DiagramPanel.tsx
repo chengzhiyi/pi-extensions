@@ -5,9 +5,9 @@ import { diagramAction } from "./api.ts";
 import { diagramModel } from "./model.ts";
 import css from "./diagrams.module.css";
 type CanvasModule = typeof import("./Canvas.tsx");
-const downloads = new Map<string, ReturnType<typeof setTimeout>>();
-export function clearDownloads() { for (const [url, timer] of downloads) { clearTimeout(timer); URL.revokeObjectURL(url); } downloads.clear(); }
-export function download(blob: Blob, name: string) { const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = name; a.click(); downloads.set(url, setTimeout(() => { URL.revokeObjectURL(url); downloads.delete(url); }, 10000)); }
+import { downloadDrawing } from "./download.ts";
+export function clearDownloads() { /* Download URLs are owned by the host document. */ }
+export const download = downloadDrawing;
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 /** The optional workspace entry opens a blank native canvas, never a second AI composer. */
@@ -87,7 +87,7 @@ function NativeDiagramEditor(p: WorkbenchPanelProps) {
     window.addEventListener("beforeunload", warn); return () => window.removeEventListener("beforeunload", warn);
   }, [state.unsynced, state.draft?.revision, state.draft?.savedRevision]);
   const openDialog = (_mode: "save") => { setPath(state.draft?.path ?? `diagrams/${p.contentId}.excalidraw`); setDialog("save"); };
-  const downloadSource = async () => { const scene = model.getSnapshot().scene; if (scene) download(new Blob([JSON.stringify(scene)], { type: "application/json" }), `${state.draft?.title ?? "diagram"}.excalidraw`); };
+  const downloadSource = async () => { const scene = model.getSnapshot().scene; if (scene) await download(new Blob([JSON.stringify(scene)], { type: "application/json" }), `${state.draft?.title ?? "diagram"}.excalidraw`); };
   return <section className={css.editor} aria-label={t("Excalidraw 编辑器", "Excalidraw editor")} onKeyDownCapture={event => {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") { event.preventDefault(); event.stopPropagation(); openDialog("save"); }
   }}>

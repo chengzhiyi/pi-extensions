@@ -65,7 +65,12 @@ export default function Canvas({ scene, readOnly, locale, onChange, onError }: {
       queueMicrotask(() => api?.updateScene({ elements: native(lastValid.current), appState: { ...viewport(lastValid.current), fileHandle: null }, captureUpdate: CaptureUpdateAction.NEVER }));
     }
   };
-  return <Excalidraw excalidrawAPI={setApi} initialData={{ elements: native(scene), appState: { ...viewport(scene), currentItemFontFamily: 5 }, scrollToContent: false }}
+  // Firefox does not focus a non-focusable canvas on pointer-down. With global
+  // keyboard handling disabled, focus the native editor container (never an
+  // input or the parent composer) before Excalidraw processes the pointer.
+  return <div style={{ width: "100%", height: "100%" }} onPointerDownCapture={event => {
+    if (event.target instanceof HTMLCanvasElement) event.target.closest<HTMLElement>(".excalidraw")?.focus({ preventScroll: true });
+  }}><Excalidraw excalidrawAPI={setApi} initialData={{ elements: native(scene), appState: { ...viewport(scene), currentItemFontFamily: 5 }, scrollToContent: false }}
     langCode={locale === "zh" ? "zh-CN" : "en"} theme={theme} viewModeEnabled={readOnly} aiEnabled={false} validateEmbeddable={false} handleKeyboardGlobally={false}
     onLinkOpen={(_e, event) => event.preventDefault()} onPaste={() => false}
     UIOptions={{ canvasActions: { export: { saveFileToDisk: true }, toggleTheme: false }, tools: { image: false } }}
@@ -82,5 +87,5 @@ export default function Canvas({ scene, readOnly, locale, onChange, onError }: {
       <MainMenu.Separator />
       <MainMenu.DefaultItems.ChangeCanvasBackground />
     </MainMenu>
-  </Excalidraw>;
+  </Excalidraw></div>;
 }
