@@ -2,6 +2,20 @@
 
 Hosted v2 Excalidraw package. Migrated from `pi-webapp-excalidraw` diagrams at source HEAD `d87f24e`, including `b01b6bb` persistence/grouping changes. No host-private imports, shared React, direct checkpoint writes, workspace filesystem access, account, collaboration, image attachments or external embeds.
 
+## Install and update in pi-webapp
+
+This is an **official optional plugin**, published as `@chengzhiyi/pi-excalidraw` on npm. Use a pi-webapp host with the **hosted v2 runtime**: publishing or installing this package does not add that runtime to an older host. In particular, a host branch/release that predates the hosted-v2 migration is not made compatible by this package's publication alone.
+
+In a compatible host, open **Plugins**, find the official **Excalidraw** card, choose **Install**, then **Enable**. The card can be listed before installation without downloading the editor or fonts. The published package already contains the editor, React, fonts and other browser assets; end users do not build it or install this repository's development dependencies. Do not install dependencies into the host's root directory as a substitute for the plugin manager.
+
+Use **Check updates** and the offered update action for independent plugin updates. Compatible software updates also synchronize already-installed official plugins; they do not install absent plugins or re-enable disabled ones. There is no update-policy selector to configure. Version compatibility, integrity checks and successful checkpoint synchronization still gate activation.
+
+An open editor defers the version switch by default. Close it and apply the pending update, or explicitly choose **Update and reopen now** after reviewing the warning that native undo/redo history is reset. Only the plugin's views/runtime are replaced: the host page and AgentSession are retained. Do not interpret a download, a registry tag or a staged npm package as proof that activation succeeded.
+
+Disabling or uninstalling retains user workspace `.excalidraw` files and recovery data. Unsaved checkpoints and browser backups are recovery aids, not a replacement for an explicitly saved workspace file. Save important drawings before upgrading. A failed save or lifecycle acknowledgement must be surfaced rather than bypassed by refresh or forced overwrite.
+
+The first post-publication documentation patch changes these instructions only; it does not claim new editor features. Release acceptance should install the two actual npm versions through the compatible host and verify staged/immediate update behavior, preserved drawing data and retained host/session identity. Local archive fixtures alone are not evidence of public-registry updates.
+
 ## Build and verification
 
 Run from this package using Node 24 (Node 22 with transform-types support also works for tests). Build dependencies and browser test dependency are explicitly pinned in package.json. React/ReactDOM, editor code, lazy chunks, locales, CSS, fonts and notices are shipped inside `dist`; there are **no installed runtime dependencies**.
