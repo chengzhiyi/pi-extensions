@@ -32,6 +32,24 @@ A successful PR verification is not npm publication. A workflow whose publish jo
 
 The shared-lockfile fingerprint may cause the existing protocol and plan-mode packages to receive compatible patch releases too. The release planner chooses versions from fresh registry metadata and publishes in dependency order; do not force versions or overwrite an existing npm version.
 
+## Main-run authentication failure and bounded repair
+
+Main CI run `40175044561` verified all packages and clean archives, but failed at
+`@chengzhiyi/pi-web-protocol@0.1.1`: npm returned `EOTP`, requiring an interactive
+one-time password. No Excalidraw publication occurred. The publisher's exact-receipt
+confirmation then waited its bounded 15 minutes; elapsed runtime was not success.
+
+The workflow had passed its new-package bootstrap token to **every** npm publish,
+so existing packages did not retain their previously successful tokenless OIDC
+path. The publisher now selects child-process authentication from fresh registry
+state: existing names clear `NODE_AUTH_TOKEN` and `NPM_TOKEN` while retaining the
+GitHub OIDC environment; new names require and keep the bootstrap credential.
+Regression tests verify per-package isolation, unchanged caller environment,
+retained OIDC capability and fail-closed new-package authentication. This does not
+disable 2FA, change npm security settings, initialize a missing package via OIDC,
+or guarantee the new token has sufficient permission; actual main CI remains the
+authority. No local publishing is used.
+
 ## Online verification after CI publication
 
 1. Confirm the CI publish job succeeded, not just verify, and record the run URL and published-source SHA.

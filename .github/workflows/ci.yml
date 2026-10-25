@@ -68,8 +68,8 @@ jobs:
       - name: Verify archives and publish changed packages in dependency order
         run: pnpm release
         env:
-          # Temporary credential for the first publication only. Existing
-          # packages use OIDC once npm Trusted Publishing is configured.
+          # publish.mjs passes this only to new package names. Existing names
+          # clear it per child process and keep their configured OIDC flow.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Sync confirmed release versions to main
         run: |
