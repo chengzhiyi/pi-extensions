@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { confirmPublication, publishInOrder, runRelease } from './publish.mjs';
+import { confirmPublication, publicationEnvironment, publishInOrder, runRelease } from './publish.mjs';
 
 const plan = [
   { name: 'protocol', version: '0.1.1', fingerprint: 'protocol', publish: true },
@@ -47,6 +47,27 @@ test('a matching version without matching content is not accepted as successful'
 
 test('unchanged packages are never published', async () => {
   await publishInOrder(plan.map(item => ({ ...item, publish: false })), () => assert.fail('unexpected publish'), () => assert.fail('unexpected confirmation'));
+});
+
+test('existing packages use tokenless OIDC without leaking or mutating bootstrap credentials', () => {
+  const environment = { NODE_AUTH_TOKEN: 'fixture-bootstrap', NPM_TOKEN: 'fixture-bootstrap', ACTIONS_ID_TOKEN_REQUEST_URL: 'https://example.invalid/oidc', ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'fixture-oidc', PATH: '/fixture/bin' };
+  const result = publicationEnvironment({ name: 'protocol', latest: { version: '0.1.0' } }, environment);
+  assert.equal(result.NODE_AUTH_TOKEN, '');
+  assert.equal('NPM_TOKEN' in result, false);
+  assert.equal(result.ACTIONS_ID_TOKEN_REQUEST_URL, environment.ACTIONS_ID_TOKEN_REQUEST_URL);
+  assert.equal(result.ACTIONS_ID_TOKEN_REQUEST_TOKEN, environment.ACTIONS_ID_TOKEN_REQUEST_TOKEN);
+  assert.equal(result.PATH, environment.PATH);
+  assert.equal(environment.NODE_AUTH_TOKEN, 'fixture-bootstrap');
+  assert.equal(environment.NPM_TOKEN, 'fixture-bootstrap');
+});
+
+test('new package keeps the CI bootstrap token and cannot silently assume OIDC initialization', () => {
+  const environment = { NODE_AUTH_TOKEN: 'fixture-bootstrap', PATH: '/fixture/bin' };
+  const result = publicationEnvironment({ name: 'new-plugin', latest: null }, environment);
+  assert.deepEqual(result, environment);
+  assert.notEqual(result, environment);
+  assert.throws(() => publicationEnvironment({ name: 'new-plugin', latest: null }, {}), /First publication requires CI authentication for new-plugin/);
+  assert.throws(() => publicationEnvironment({ name: 'new-plugin', latest: null }, { NODE_AUTH_TOKEN: '' }), /First publication requires/);
 });
 
 test('publishing outside the main GitHub Actions job fails before reading or changing files', async t => {

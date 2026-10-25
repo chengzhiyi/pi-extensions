@@ -33,6 +33,20 @@ export async function publishInOrder(plan, publish, confirm) {
   }
 }
 
+/** Existing packages retain Trusted Publishing; the temporary token only bootstraps new names. */
+export function publicationEnvironment(item, environment = process.env) {
+  const result = { ...environment };
+  if (item.latest) {
+    // setup-node's npmrc interpolates NODE_AUTH_TOKEN. Empty preserves the prior
+    // tokenless OIDC path; passing the bootstrap token makes npm prefer it instead.
+    result.NODE_AUTH_TOKEN = '';
+    delete result.NPM_TOKEN;
+  } else {
+    assert(result.NODE_AUTH_TOKEN, `First publication requires CI authentication for ${item.name}`);
+  }
+  return result;
+}
+
 export async function runRelease(mode, root = process.cwd()) {
   assert(['--plan', '--prepare', '--publish'].includes(mode), 'Use --plan, --prepare or --publish');
   if (mode === '--publish') {
@@ -64,7 +78,9 @@ export async function runRelease(mode, root = process.cwd()) {
   }
   const archives = new Map(tarballs.map(item => [item.name, item.path]));
   await publishInOrder(plan, item => {
-    execFileSync('npm', ['publish', archives.get(item.name), '--access', 'public', '--tag', 'latest'], { cwd: root, stdio: 'inherit' });
+    const env = publicationEnvironment(item);
+    console.log(`Publishing ${item.name}: ${item.latest ? 'Trusted Publishing (OIDC)' : 'first-publication credential'}`);
+    execFileSync('npm', ['publish', archives.get(item.name), '--access', 'public', '--tag', 'latest'], { cwd: root, stdio: 'inherit', env });
   }, item => confirmPublication(item));
   console.log('All planned publications confirmed; manifests are ready to sync to main');
   return plan;
