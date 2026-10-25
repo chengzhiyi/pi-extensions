@@ -1,0 +1,22 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {mkdir,writeFile,rm,symlink} from 'node:fs/promises';
+import {resolve,join} from 'node:path';
+import {createHash,randomUUID} from 'node:crypto';
+import {execFileSync} from 'node:child_process';
+import {validatePackedPackage} from '../../../scripts/pack.mjs';
+test('v2 archive allows only enumerated resources with matching bytes/hash, rejects extra files, links and tampering',async t=>{
+ const dir=resolve('../../artifacts',`archive-test-${randomUUID()}`);await mkdir(join(dir,'package/dist'),{recursive:true});t.after(()=>rm(dir,{recursive:true,force:true}));
+ const manifest={name:'fixture',version:'0.1.0',main:'./dist/runtime.js',piWebapp:{apiVersion:2,backend:{entry:'./dist/runtime.js'},frontend:{document:'./dist/frame.html',controller:'./dist/frame.html'},resourcesManifest:'./dist/resources.json'}};
+ await writeFile(join(dir,'package/package.json'),JSON.stringify(manifest));await writeFile(join(dir,'package/LICENSE'),'MIT');
+ const files=[{path:'./dist/runtime.js',text:'export const createRuntime=()=>({});'},{path:'./dist/frame.html',text:'<!doctype html>'}];
+ const resources=files.map(({path,text})=>({path,bytes:Buffer.byteLength(text),sha256:createHash('sha256').update(text).digest('hex'),mime:'text/plain'}));
+ for(const {path,text} of files)await writeFile(join(dir,'package',path),text);
+ await writeFile(join(dir,'package/dist/resources.json'),JSON.stringify({version:1,files:resources}));
+ const archive=join(dir,'fixture.tgz');
+ const pack=()=>execFileSync('tar',['-czf',archive,'-C',dir,'package']);
+ pack();assert.equal(validatePackedPackage(archive,manifest,new Map()).name,'fixture');
+ await writeFile(join(dir,'package/dist/unlisted.json'),'{}');pack();assert.throws(()=>validatePackedPackage(archive,manifest,new Map()),/Unexpected/);await rm(join(dir,'package/dist/unlisted.json'));
+ await writeFile(join(dir,'package/dist/runtime.js'),'tampered');pack();assert.throws(()=>validatePackedPackage(archive,manifest,new Map()),/mismatch/);
+ await writeFile(join(dir,'package/dist/runtime.js'),files[0].text);await symlink('runtime.js',join(dir,'package/dist/link.js'));pack();assert.throws(()=>validatePackedPackage(archive,manifest,new Map()),/Links/);
+});

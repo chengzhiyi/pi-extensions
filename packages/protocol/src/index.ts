@@ -1,6 +1,7 @@
 import type { ComponentType, ReactNode } from "react";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 export * from "./interactions.js";
+export * from "./hosted.js";
 import type { WebInteraction } from "./interactions.js";
 
 export const WEB_API_VERSION = 1 as const;
