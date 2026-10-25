@@ -6,7 +6,9 @@ test('new npm packages require bootstrap credentials, existing packages use OIDC
   const packages = ['protocol', 'plugin'];
   const missing = async () => null;
   assert.deepEqual(await publishingReadiness(packages, { lookup: missing }), { ready: false, missing: packages });
-  assert.equal((await publishingReadiness(packages, { lookup: missing, hasToken: true })).ready, true);
+  assert.equal((await publishingReadiness(packages, { lookup: missing, hasToken: true })).ready, false);
+  assert.equal((await publishingReadiness(packages, { lookup: missing, stageNewPackages: true })).ready, false);
+  assert.equal((await publishingReadiness(packages, { lookup: missing, hasToken: true, stageNewPackages: true })).ready, true);
   assert.equal((await publishingReadiness(packages, { lookup: async () => ({ version: '0.1.0' }) })).ready, true);
 });
 

@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setTimeout } from 'node:timers/promises';
 import { packWorkspace, verifyInstallation } from './pack.mjs';
 import { planReleases, readPublishedPackage } from './release.mjs';
 import { readWorkspace } from './workspace.mjs';
+import { stageArchive } from './staging.mjs';
 
 function matches(item, published) {
   return published?.version === item.version && published.piRelease?.fingerprint === item.fingerprint;
@@ -23,17 +24,22 @@ export async function confirmPublication(item, { lookup = readPublishedPackage, 
   return null;
 }
 
-export async function publishInOrder(plan, publish, confirm) {
+export async function publishInOrder(plan, publish, confirm, stage = null) {
   for (const item of plan.filter(item => item.publish)) {
+    if (!item.latest && stage) {
+      const receipt = await stage(item);
+      return { status: 'awaiting-promotion', item: item.name, receipt };
+    }
     let failure;
     try { await publish(item); } catch (error) { failure = error; }
     // A failed command can still have reached npm. Confirm before retrying or
     // publishing a dependent, rather than allocating another version blindly.
     if (!matches(item, await confirm(item))) throw failure ?? new Error(`Publication not confirmed for ${item.name}@${item.version}`);
   }
+  return { status: 'published' };
 }
 
-/** Existing packages retain Trusted Publishing; the temporary token only bootstraps new names. */
+/** Existing packages retain Trusted Publishing; the temporary token only stages new names. */
 export function publicationEnvironment(item, environment = process.env) {
   const result = { ...environment };
   if (item.latest) {
@@ -47,6 +53,12 @@ export function publicationEnvironment(item, environment = process.env) {
   return result;
 }
 
+export function assertStagingOptIn(plan, environment = process.env) {
+  if (!plan.some(item => item.publish && !item.latest)) return;
+  assert(environment.GITHUB_EVENT_NAME === 'workflow_dispatch' && environment.CI_STAGE_NEW_PACKAGES === 'true',
+    'New package staging requires an explicit workflow_dispatch with stage_new_packages=true; inspect prior staged receipts before retrying');
+}
+
 export async function runRelease(mode, root = process.cwd()) {
   assert(['--plan', '--prepare', '--publish'].includes(mode), 'Use --plan, --prepare or --publish');
   if (mode === '--publish') {
@@ -58,6 +70,7 @@ export async function runRelease(mode, root = process.cwd()) {
   const plan = planReleases(packages, published);
   console.table(plan.map(item => ({ package: item.name, version: item.version, action: item.publish ? 'publish' : 'unchanged' })));
   if (mode === '--plan') return plan;
+  if (mode === '--publish') assertStagingOptIn(plan);
   const source = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
   for (const item of plan) {
     const manifest = { ...item.manifest, version: item.version,
@@ -77,13 +90,27 @@ export async function runRelease(mode, root = process.cwd()) {
     return plan;
   }
   const archives = new Map(tarballs.map(item => [item.name, item.path]));
-  await publishInOrder(plan, item => {
+  const result = await publishInOrder(plan, item => {
+    assert(item.latest, 'New package names must use staged publication');
     const env = publicationEnvironment(item);
-    console.log(`Publishing ${item.name}: ${item.latest ? 'Trusted Publishing (OIDC)' : 'first-publication credential'}`);
+    console.log(`Publishing ${item.name}: Trusted Publishing (OIDC)`);
     execFileSync('npm', ['publish', archives.get(item.name), '--access', 'public', '--tag', 'latest'], { cwd: root, stdio: 'inherit', env });
-  }, item => confirmPublication(item));
-  console.log('All planned publications confirmed; manifests are ready to sync to main');
-  return plan;
+  }, item => confirmPublication(item), item => {
+    console.log(`Staging ${item.name}@${item.version}; human 2FA promotion is required before installation or dependent publishing`);
+    return stageArchive(item, archives.get(item.name), { source, destination,
+      runId: process.env.GITHUB_RUN_ID, runAttempt: process.env.GITHUB_RUN_ATTEMPT,
+      environment: publicationEnvironment(item) });
+  });
+  await writeFile(join(root, 'artifacts', 'release', 'publication-result.json'), `${JSON.stringify(result, null, 2)}\n`);
+  if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `published=${result.status === 'published'}\n`);
+  if (result.status === 'awaiting-promotion') {
+    const message = `Awaiting human promotion: ${result.item}, stage ID ${result.receipt.stageId}. STAGED ONLY, NOT PUBLISHED.\nReview the exact receipt and archive in the release artifact, then approve in npm Staged Packages with 2FA.\nNo dependent publications or manifest sync ran. After promotion, configure this package's Trusted Publisher before resuming main CI.\n`;
+    console.log(message);
+    if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY, message);
+  } else {
+    console.log('All planned publications confirmed; manifests are ready to sync to main');
+  }
+  return result;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

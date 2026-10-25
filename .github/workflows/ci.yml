@@ -6,6 +6,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      stage_new_packages:
+        description: 'Stage first versions for human 2FA promotion (inspect the staged queue and prior receipts before retrying)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -35,6 +40,7 @@ jobs:
         run: node scripts/publish-readiness.mjs
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          CI_STAGE_NEW_PACKAGES: ${{ github.event_name == 'workflow_dispatch' && inputs.stage_new_packages }}
 
   publish:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.verify.outputs.publish_ready == 'true'
@@ -65,13 +71,24 @@ jobs:
       - run: pnpm check
       - run: pnpm test
       - run: pnpm build
-      - name: Verify archives and publish changed packages in dependency order
+      - name: Verify archives; publish existing packages or stage first versions
+        id: release
         run: pnpm release
         env:
-          # publish.mjs passes this only to new package names. Existing names
-          # clear it per child process and keep their configured OIDC flow.
+          # New names are staged for human 2FA promotion, never directly published.
+          # Initialized packages clear this credential and use their configured OIDC.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          CI_STAGE_NEW_PACKAGES: ${{ github.event_name == 'workflow_dispatch' && inputs.stage_new_packages }}
+      - name: Preserve exact release archives and publication or staging receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/release/
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Sync confirmed release versions to main
+        if: steps.release.outputs.published == 'true'
         run: |
           pnpm install --lockfile-only --ignore-scripts
           git config user.name "github-actions[bot]"
