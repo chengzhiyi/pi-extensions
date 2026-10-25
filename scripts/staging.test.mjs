@@ -12,6 +12,7 @@ const expected = { name: item.name, version: item.version,
   integrity: `sha512-${createHash('sha512').update(bytes).digest('base64')}`,
   shasum: createHash('sha1').update(bytes).digest('hex') };
 const ack = { ...expected, stageId: 'fixture-stage-123' };
+const output = receipt => JSON.stringify({ [item.name]: receipt });
 
 async function fixture(t) {
   const destination = await mkdtemp(join(tmpdir(), 'pi-staging-test-'));
@@ -22,11 +23,13 @@ async function fixture(t) {
 }
 
 test('npm stage acknowledgement requires exact name, version, integrity, shasum and stage ID', () => {
-  assert.deepEqual(validateStageReceipt(JSON.stringify(ack), expected), ack);
+  assert.deepEqual(validateStageReceipt(output(ack), expected), ack);
+  assert.throws(() => validateStageReceipt(JSON.stringify(ack), expected), /exactly one package/);
+  assert.throws(() => validateStageReceipt(JSON.stringify({ [item.name]: ack, extra: ack }), expected), /exactly one package/);
   for (const field of ['name', 'version', 'integrity', 'shasum', 'stageId']) {
-    assert.throws(() => validateStageReceipt(JSON.stringify({ ...ack, [field]: '' }), expected));
+    assert.throws(() => validateStageReceipt(output({ ...ack, [field]: '' }), expected));
   }
-  assert.throws(() => validateStageReceipt(JSON.stringify({ ...ack, stageId: 'inject\npublished=true' }), expected));
+  assert.throws(() => validateStageReceipt(output({ ...ack, stageId: 'inject\npublished=true' }), expected));
   assert.throws(() => validateStageReceipt('[]', expected));
   assert.throws(() => validateStageReceipt('{broken', expected));
 });
@@ -43,7 +46,7 @@ test('staging preserves intent before exactly one stage request and saves exact 
     assert.equal(intent.status, 'stage-requested');
     assert.equal(intent.integrity, expected.integrity);
     assert.equal(intent.source, 'fixture-source');
-    return JSON.stringify(ack);
+    return output(ack);
   } });
   assert.equal(calls, 1);
   assert.equal(result.status, 'awaiting-promotion');
@@ -54,6 +57,7 @@ test('staging preserves intent before exactly one stage request and saves exact 
   const saved = await readFile(join(options.destination, 'first-publication-stage.json'), 'utf8');
   assert.deepEqual(JSON.parse(saved), result);
   assert(!saved.includes('fixture-only'), 'Credentials must not enter the durable receipt');
+  assert.equal(await readFile(join(options.destination, 'first-publication-stage-output.json'), 'utf8'), output(ack));
 });
 
 for (const mode of ['transport-failure', 'bad-receipt', 'no-stage-id']) {
@@ -63,7 +67,7 @@ for (const mode of ['transport-failure', 'bad-receipt', 'no-stage-id']) {
     await assert.rejects(stageArchive(item, options.archive, { ...options, execute: () => {
       calls++;
       if (mode === 'transport-failure') throw new Error('lost response');
-      return JSON.stringify({ ...ack, ...(mode === 'bad-receipt' ? { integrity: 'different' } : { stageId: null }) });
+      return output({ ...ack, ...(mode === 'bad-receipt' ? { integrity: 'different' } : { stageId: null }) });
     } }));
     assert.equal(calls, 1);
     const saved = JSON.parse(await readFile(join(options.destination, 'first-publication-stage.json'), 'utf8'));
@@ -73,6 +77,18 @@ for (const mode of ['transport-failure', 'bad-receipt', 'no-stage-id']) {
     assert(saved.instruction.includes('before any retry'));
   });
 }
+
+test('ambiguous npm output is retained before validation with credential values redacted', async t => {
+  const options = await fixture(t);
+  await assert.rejects(stageArchive(item, options.archive, { ...options,
+    environment: { NODE_AUTH_TOKEN: 'fixture-secret-only' },
+    execute: () => JSON.stringify({ unexpected: 'fixture-secret-only' }),
+  }));
+  const saved = await readFile(join(options.destination, 'first-publication-stage-output.json'), 'utf8');
+  assert(saved.includes('[REDACTED]'));
+  assert(!saved.includes('fixture-secret-only'));
+  assert.equal(JSON.parse(await readFile(join(options.destination, 'first-publication-stage.json'), 'utf8')).status, 'stage-unconfirmed');
+});
 
 test('CI retains exact artifacts and only syncs manifests after full publication', async () => {
   const workflow = await readFile(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');

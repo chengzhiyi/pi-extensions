@@ -34,6 +34,7 @@ export function planReleases(packages, published) {
     const fingerprint = digest([pkg.fingerprint, dependencyVersions]);
     const latest = published[name];
     parts(pkg.manifest.version);
+    if (latest?.stub || latest?.version === '0.0.0-stage') throw new Error(`Pending staged promotion for ${name}; inspect the existing stage, never republish its placeholder`);
     if (latest) parts(latest.version);
     const publish = !latest || latest.piRelease?.fingerprint !== fingerprint || newer(pkg.manifest.version, latest.version);
     let version = latest?.version ?? pkg.manifest.version;
@@ -62,6 +63,7 @@ export async function readPublishedPackage(name, request = fetch) {
   const metadata = await response.json();
   const latest = metadata.versions?.[metadata['dist-tags']?.latest];
   if (!latest) throw new Error(`Registry package ${name} has no usable latest version`);
+  if (latest.stub || latest.version === '0.0.0-stage') throw new Error(`Pending staged promotion for ${name}; the registry placeholder is not a published plugin`);
   const highestVersion = Object.keys(metadata.versions).filter(version => /^\d+\.\d+\.\d+$/.test(version))
     .reduce((highest, version) => newer(version, highest) ? version : highest, latest.version);
   return { ...latest, highestVersion };

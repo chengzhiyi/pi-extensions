@@ -5,8 +5,12 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
 export function validateStageReceipt(output, expected) {
-  const receipt = JSON.parse(output);
-  assert(receipt && !Array.isArray(receipt), 'Expected one npm stage receipt');
+  const envelope = JSON.parse(output);
+  assert(envelope && !Array.isArray(envelope) && typeof envelope === 'object', 'Expected one npm stage receipt');
+  // npm 11 logTar buffers JSON under the package-name key, not as a flat object.
+  assert.deepEqual(Object.keys(envelope), [expected.name], 'Expected exactly one package in npm stage output');
+  const receipt = envelope[expected.name];
+  assert(receipt && typeof receipt === 'object' && !Array.isArray(receipt), 'Invalid npm stage receipt');
   assert.equal(receipt.name, expected.name, 'Staged package name mismatch');
   assert.equal(receipt.version, expected.version, 'Staged package version mismatch');
   assert.equal(receipt.integrity, expected.integrity, 'Staged archive integrity mismatch');
@@ -29,12 +33,22 @@ export async function stageArchive(item, archive, { source, destination, runId, 
   const path = join(destination, 'first-publication-stage.json');
   const save = data => writeFile(path, `${JSON.stringify(data, null, 2)}\n`);
   await save(intent);
+  const saveOutput = async output => {
+    let text = String(output ?? '');
+    for (const secret of [environment.NODE_AUTH_TOKEN, environment.NPM_TOKEN]) {
+      if (secret) text = text.split(secret).join('[REDACTED]');
+    }
+    await writeFile(join(destination, 'first-publication-stage-output.json'), text);
+  };
   try {
-    const result = validateStageReceipt(await execute(['stage', 'publish', archive, '--access', 'public', '--tag', 'latest', '--json'], environment), expected);
+    const output = await execute(['stage', 'publish', archive, '--access', 'public', '--tag', 'latest', '--json'], environment);
+    await saveOutput(output);
+    const result = validateStageReceipt(output, expected);
     const receipt = { ...intent, status: 'awaiting-promotion', stageId: result.stageId };
     await save(receipt);
     return receipt;
   } catch (error) {
+    if (error.stdout) await saveOutput(error.stdout);
     await save({ ...intent, status: 'stage-unconfirmed', instruction: 'Inspect npm Staged Packages and this exact archive before any retry; a failed command may have reached npm.' });
     throw error;
   }

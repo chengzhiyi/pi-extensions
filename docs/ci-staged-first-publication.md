@@ -16,7 +16,11 @@ The `release-<run-id>-<attempt>` GitHub artifact (14-day retention) preserves:
 - `first-publication-stage.json`: submitted archive hashes/size, name/version, source commit, content fingerprint, run identity and stage ID.
 - `publication-result.json`: `awaiting-promotion`, never `published`, for a staged release.
 
-A submission intent is written **before** the npm request. A transport or malformed-ack failure records `stage-unconfirmed` and fails CI; it does not retry. Inspect the actual npm queue and exact archive before any further action. A failed client command may have reached npm.
+A submission intent is written **before** the npm request. A transport or malformed-ack failure records `stage-unconfirmed` and fails CI; it does not retry. npm 11 JSON is keyed by package name; the exact output is now retained with credentials redacted before validation. Inspect the actual npm queue and exact archive before any further action. A failed client command may have reached npm.
+
+### Recovery of run 40184840188
+
+This run returned successfully from the npm stage command, but the original parser incorrectly expected a flat object. npm created a `0.0.0-stage` placeholder, **not the operational version**. Do not run release/stage again. The manual main-only `recover-first-stage.yml` workflow only lists/views/downloads the existing stage; it cannot approve, reject or publish. It downloads the original run artifact and checks its fixed source/fingerprint/run identity and SHA-256, then requires exactly one matching pending npm stage and a downloaded tarball identical in size, SHA-1, SHA-512 and SHA-256. It preserves a recovered stage receipt for human review. Zero/duplicate/mismatched entries fail closed and require inspection, never an automatic retry. Registry placeholders are explicitly blocked by release planning and cannot be mistaken for an initialized release.
 
 ## Human review and promotion
 

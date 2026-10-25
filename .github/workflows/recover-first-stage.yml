@@ -1,0 +1,39 @@
+name: Inspect ambiguous first npm stage (read only)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  inspect:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - run: npm install --global npm@11.21.1
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-40184840188-1
+          run-id: 40184840188
+          github-token: ${{ github.token }}
+          path: original-stage
+      - name: Recover existing stage without publishing, approval, or rejection
+        run: node scripts/recover-first-stage.mjs original-stage recovered-stage
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Preserve read-only recovery evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: recovered-first-stage-${{ github.run_id }}
+          path: recovered-stage/
+          if-no-files-found: ignore
+          retention-days: 14

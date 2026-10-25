@@ -72,6 +72,14 @@ test('registry treats only missing packages as first releases and fails closed o
   await assert.rejects(readPublishedPackage('@test/protocol', async () => Response.json({ versions: {} })), /latest/i);
 });
 
+test('npm staged placeholders fail closed and cannot initialize publication or allocate a new version', async () => {
+  for (const placeholder of [{ version: '0.0.0-stage' }, { version: '0.1.0', stub: true }]) {
+    const metadata = { 'dist-tags': { latest: placeholder.version }, versions: { [placeholder.version]: placeholder } };
+    await assert.rejects(readPublishedPackage('@test/protocol', async () => Response.json(metadata)), /Pending staged promotion/);
+    assert.throws(() => planReleases([protocol], { '@test/protocol': placeholder }), /Pending staged promotion/);
+  }
+});
+
 test('release lookup revalidates metadata instead of accepting a cached pre-publication 404', async () => {
   const metadata = { 'dist-tags': { latest: '0.1.0' }, versions: {
     '0.1.0': { version: '0.1.0', piRelease: { fingerprint: 'confirmed' } },
