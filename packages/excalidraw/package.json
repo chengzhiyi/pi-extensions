@@ -1,6 +1,6 @@
 {
   "name": "@chengzhiyi/pi-excalidraw",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Self-contained hosted v2 Excalidraw plugin for pi-webapp",
   "type": "module",
   "license": "MIT",
@@ -62,7 +62,7 @@
     "directory": "packages/excalidraw"
   },
   "piRelease": {
-    "fingerprint": "a5e25eda7092de7c81571a2875d5432617b184ab4d8f50bb22e24b63027bbdb4",
-    "source": "3ec771c3a0de3f9d20c1f9947d9c31d36e154a64"
+    "fingerprint": "ce315999acb1ffe6c653ea6003303188e94ba15cb2a58788a86c1a32029a130f",
+    "source": "627e9d680d7978cf7398052b82e8afac5295e3b4"
   }
 }
