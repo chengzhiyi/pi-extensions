@@ -18,6 +18,21 @@ test('publication confirmation waits for asynchronous registry processing', asyn
   assert.equal(elapsed, 240000);
 });
 
+test('confirmation reports pending and confirmed without exposing raw registry metadata', async () => {
+  const logs = [];
+  let elapsed = 0;
+  let calls = 0;
+  await confirmPublication(plan[0], {
+    lookup: async () => ++calls === 1 ? { version: '0.1.0', secret: 'never-log-this' } : receipt(plan[0]),
+    wait: async ms => { elapsed += ms; },
+    now: () => elapsed,
+    log: line => logs.push(line),
+  });
+  assert.match(logs[0], /pending; attempt 1\/60; elapsed 0.0s; latest=0.1.0; fingerprint=mismatch/);
+  assert.match(logs[1], /confirmed; attempt 2\/60; elapsed 15.0s/);
+  assert(!logs.join('\n').includes('never-log-this'));
+});
+
 test('publication confirmation is bounded and rejects a different receipt', async () => {
   let elapsed = 0;
   const result = await confirmPublication(plan[0], {

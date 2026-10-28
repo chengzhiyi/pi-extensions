@@ -8,17 +8,21 @@ import { packWorkspace, verifyInstallation } from './pack.mjs';
 import { planReleases, readPublishedPackage } from './release.mjs';
 import { readWorkspace } from './workspace.mjs';
 import { stageArchive } from './staging.mjs';
+import { timedSync } from './timing.mjs';
 
 function matches(item, published) {
   return published?.version === item.version && published.piRelease?.fingerprint === item.fingerprint;
 }
 
-export async function confirmPublication(item, { lookup = readPublishedPackage, wait = setTimeout, attempts = 60 } = {}) {
+export async function confirmPublication(item, { lookup = readPublishedPackage, wait = setTimeout, attempts = 60, log = console.log, now = Date.now } = {}) {
   // npm accepts a publish before asynchronous processing exposes its metadata.
   // Poll up to 60 times, 15 seconds apart; never advance without the exact receipt.
+  const start = now();
   for (let attempt = 0; attempt < attempts; attempt++) {
     const current = await lookup(item.name);
-    if (matches(item, current)) return current;
+    const confirmed = matches(item, current);
+    log(`[registry] ${item.name}@${item.version}: ${confirmed ? 'confirmed' : 'pending'}; attempt ${attempt + 1}/${attempts}; elapsed ${((now() - start) / 1000).toFixed(1)}s; latest=${current?.version ?? 'missing'}; fingerprint=${current?.piRelease?.fingerprint === item.fingerprint ? 'match' : 'mismatch'}`);
+    if (confirmed) return current;
     if (attempt < attempts - 1) await wait(15000);
   }
   return null;
@@ -94,7 +98,7 @@ export async function runRelease(mode, root = process.cwd()) {
     assert(item.latest, 'New package names must use staged publication');
     const env = publicationEnvironment(item);
     console.log(`Publishing ${item.name}: Trusted Publishing (OIDC)`);
-    execFileSync('npm', ['publish', archives.get(item.name), '--access', 'public', '--tag', 'latest'], { cwd: root, stdio: 'inherit', env });
+    timedSync(`npm publish ${item.name}`, () => execFileSync('npm', ['publish', archives.get(item.name), '--access', 'public', '--tag', 'latest'], { cwd: root, stdio: 'inherit', env }));
   }, item => confirmPublication(item), item => {
     console.log(`Staging ${item.name}@${item.version}; human 2FA promotion is required before installation or dependent publishing`);
     return stageArchive(item, archives.get(item.name), { source, destination,

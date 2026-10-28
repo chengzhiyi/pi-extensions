@@ -27,9 +27,15 @@ jobs:
         with:
           node-version: '24'
           cache: pnpm
+      # Cache download content only, never npm credentials, logs or node_modules.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.npm/_cacache
+          key: npm-smoke-${{ runner.os }}-node24-${{ hashFiles('pnpm-lock.yaml', 'scripts/pack.mjs') }}
+          restore-keys: npm-smoke-${{ runner.os }}-node24-
       - run: pnpm install --frozen-lockfile
       - run: pnpm audit --prod --audit-level=high
-      - run: pnpm --filter @chengzhiyi/pi-excalidraw exec playwright install --with-deps chromium
+      - run: pnpm --filter @chengzhiyi/pi-excalidraw exec playwright install --with-deps --only-shell chromium
       - run: pnpm check
       - run: pnpm test
       - run: pnpm build
@@ -64,10 +70,15 @@ jobs:
           node-version: '24'
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
+      - uses: actions/cache@v4
+        with:
+          path: ~/.npm/_cacache
+          key: npm-smoke-${{ runner.os }}-node24-${{ hashFiles('pnpm-lock.yaml', 'scripts/pack.mjs') }}
+          restore-keys: npm-smoke-${{ runner.os }}-node24-
       - run: npm install --global npm@11
       - run: pnpm install --frozen-lockfile
       - run: pnpm audit --prod --audit-level=high
-      - run: pnpm --filter @chengzhiyi/pi-excalidraw exec playwright install --with-deps chromium
+      - run: pnpm --filter @chengzhiyi/pi-excalidraw exec playwright install --with-deps --only-shell chromium
       - run: pnpm check
       - run: pnpm test
       - run: pnpm build

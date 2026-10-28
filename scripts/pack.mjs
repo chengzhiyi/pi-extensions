@@ -6,31 +6,34 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { readWorkspace } from './workspace.mjs';
+import { withPackedFiles } from './archive.mjs';
+import { timedSync } from './timing.mjs';
 
 export function validatePackedPackage(tarball, expected, versions) {
-  const files = execFileSync('tar', ['-tf', tarball], { encoding: 'utf8' }).trim().split('\n');
-  const manifest = JSON.parse(execFileSync('tar', ['-xOf', tarball, 'package/package.json'], { encoding: 'utf8' }));
+  return withPackedFiles(tarball, (files, read) => validateFiles(files, read, expected, versions));
+}
+
+function validateFiles(files, read, expected, versions) {
+  const manifest = JSON.parse(read('package/package.json'));
   const allowed = new Set(['package/package.json', 'package/README.md', 'package/LICENSE', 'package/NOTICE.txt']);
   if (manifest.piWebapp?.apiVersion === 2) {
     const resourcePath = manifest.piWebapp.resourcesManifest;
     assert(/^\.\/dist\/[\w.-]+\.json$/.test(resourcePath), 'Invalid resources manifest');
     const resourceFile = `package/${resourcePath.slice(2)}`;
     allowed.add(resourceFile);
-    const resources = JSON.parse(execFileSync('tar', ['-xOf', tarball, resourceFile], {encoding: 'utf8'}));
+    const resources = JSON.parse(read(resourceFile));
     assert.equal(resources.version, 1);
     assert(Array.isArray(resources.files) && resources.files.length <= 4096);
     for (const item of resources.files) {
       assert(/^\.\/dist\/(?:[\w.-]+\/)*[\w.-]+\.(?:js|css|html|json|woff2?|ttf|txt)$/.test(item.path) && !item.path.split('/').slice(1).some(p => p === '.' || p === '..'), 'Uncontrolled resource');
       const path = `package/${item.path.slice(2)}`;
       assert(!allowed.has(path), 'Duplicate resource'); allowed.add(path);
-      const bytes = execFileSync('tar', ['-xOf', tarball, path], {maxBuffer: 64 * 1024 * 1024});
+      const bytes = read(path);
       assert.equal(bytes.length, item.bytes, `Resource size mismatch: ${path}`);
       assert.equal(createHash('sha256').update(bytes).digest('hex'), item.sha256, `Resource hash mismatch: ${path}`);
     }
   }
   if (manifest.piWebapp?.apiVersion === 2) {
-    const listing = execFileSync('tar', ['-tvf', tarball], {encoding: 'utf8'}).trim().split('\n');
-    assert(listing.every(line => /^[d-]/.test(line)), 'Links and special archive members are forbidden');
     assert(files.filter(path => path.endsWith('/')).every(path => [...allowed].some(file => file.startsWith(path))), 'Uncontrolled archive directory');
   }
   assert.equal(new Set(files).size, files.length, 'Duplicate tar members');
@@ -55,11 +58,11 @@ export async function packWorkspace(root, destination) {
   const tarballs = [];
   for (const pkg of packages) {
     const before = new Set(await readdir(destination));
-    execFileSync('pnpm', ['pack', '--pack-destination', destination], { cwd: join(root, pkg.dir), stdio: 'pipe' });
+    timedSync(`pack ${pkg.manifest.name}`, () => execFileSync('pnpm', ['pack', '--pack-destination', destination], { cwd: join(root, pkg.dir), stdio: 'pipe' }));
     const added = (await readdir(destination)).filter(file => file.endsWith('.tgz') && !before.has(file));
     assert.equal(added.length, 1, `Expected one tarball for ${pkg.manifest.name}`);
     const path = join(destination, added[0]);
-    validatePackedPackage(path, pkg.manifest, versions);
+    timedSync(`archive validation ${pkg.manifest.name}`, () => validatePackedPackage(path, pkg.manifest, versions));
     tarballs.push({ name: pkg.manifest.name, path });
   }
   return tarballs;
@@ -74,7 +77,7 @@ export async function verifyInstallation(root, tarballs) {
     const workspace = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
     const dependencies = ['@earendil-works/pi-coding-agent', 'typebox', 'react'].map(name => `${name}@${plugin.devDependencies[name]}`);
     dependencies.push(`jsdom@${workspace.devDependencies.jsdom}`);
-    execFileSync('npm', ['install', '--ignore-scripts', '--legacy-peer-deps', '--no-audit', '--no-fund', ...tarballs.map(item => item.path), ...dependencies], { cwd: directory, stdio: 'pipe', timeout: 180000 });
+    timedSync('standalone npm install', () => execFileSync('npm', ['install', '--ignore-scripts', '--legacy-peer-deps', '--no-audit', '--no-fund', '--prefer-offline', ...tarballs.map(item => item.path), ...dependencies], { cwd: directory, stdio: 'pipe', timeout: 180000 }));
     const smoke = `import assert from 'node:assert/strict';
       import React from 'react';
       import { JSDOM } from 'jsdom';
@@ -95,7 +98,7 @@ export async function verifyInstallation(root, tarballs) {
       dom.window.close();
       console.log('Standalone package installation and both plugin entrypoints passed');`;
     await writeFile(join(directory, 'smoke.mjs'), smoke);
-    execFileSync(process.execPath, ['smoke.mjs'], { cwd: directory, stdio: 'inherit', timeout: 30000 });
+    timedSync('installed plugin smoke', () => execFileSync(process.execPath, ['smoke.mjs'], { cwd: directory, stdio: 'inherit', timeout: 30000 }));
     if (tarballs.some(item => item.name === '@chengzhiyi/pi-excalidraw')) {
       await writeFile(join(directory, 'hosted-smoke.mjs'), `import assert from 'node:assert/strict';
         import { readFile } from 'node:fs/promises';
@@ -125,7 +128,7 @@ export async function verifyInstallation(root, tarballs) {
         assert.equal((await runtime.health()).ok, false);
         await assert.rejects(runtime.invoke(request), /disposed/);
         console.log('Installed hosted v2 archive runtime, state CAS and lifecycle passed');`);
-      execFileSync(process.execPath, ['hosted-smoke.mjs'], { cwd: directory, stdio: 'inherit', timeout: 30000 });
+      timedSync('installed hosted smoke', () => execFileSync(process.execPath, ['hosted-smoke.mjs'], { cwd: directory, stdio: 'inherit', timeout: 30000 }));
     }
   } finally {
     await rm(directory, { recursive: true, force: true });
