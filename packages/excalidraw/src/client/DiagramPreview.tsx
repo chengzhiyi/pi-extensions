@@ -27,7 +27,7 @@ export function DiagramToolView(p: ToolViewProps) {
   }, [details]);
   const t = (zh: string, en: string) => p.locale === "zh" ? zh : en;
   const output = p.result?.blocks.filter(b => b.kind === "text").map(b => b.text).join("\n");
-  const header = (unavailable = false) => <>
+  const header = (unavailable = false) => p.hostToolCard ? null : <>
     <header className={css.toolHeader}>
       <button type="button" className={css.previewToggle} aria-expanded={!collapsed} aria-controls={bodyId} aria-label={t("展开或收起图稿", "Toggle drawing preview")} onClick={() => setCollapsed(value => !value)}>
         <ExcalidrawIcon size={18} /><span className={css.toolTitle}>create view</span>
@@ -44,9 +44,9 @@ export function DiagramToolView(p: ToolViewProps) {
   if (p.result?.isError) content = <article className={css.artifact}>{header()}<div id={bodyId} hidden={collapsed} className={css.toolError} role="alert">{output}</div></article>;
   else if (session && result && typeof result.id === "string" && /^[\w-]{1,80}$/.test(result.id)) content = <DiagramPreview {...disclosure} sessionId={session.sessionId} id={result.id} title={typeof result.title === "string" ? result.title : "Excalidraw"} locale={p.locale} open={() => p.openPanel(`diagram:${result!.id}`)} />;
   else content = <StreamingDrawing {...disclosure} input={p.call.text} locale={p.locale} running={p.running} />;
-  return <>{content}<Modal open={details} onClose={closeDetails} title={t("绘图工具参数", "Drawing tool parameters")} closeLabel={t("关闭", "Close")} className={css.parametersDialog} contentClassName={css.parametersContent}>
+  return <div data-host-tool-card={p.hostToolCard || undefined}>{content}<Modal open={details} onClose={closeDetails} title={t("绘图工具参数", "Drawing tool parameters")} closeLabel={t("关闭", "Close")} className={css.parametersDialog} contentClassName={css.parametersContent}>
     <div className={css.toolDetails}><h3>{t("输入参数", "Input")}</h3><pre tabIndex={0}>{p.call.text}</pre>{output !== undefined && <><h3>{t("工具结果", "Result")}</h3><pre tabIndex={0}>{output}</pre></>}</div>
-  </Modal></>;
+  </Modal></div>;
 }
 
 interface Disclosure { header(unavailable?: boolean): ReactNode; collapsed: boolean; bodyId: string }

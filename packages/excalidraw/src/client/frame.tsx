@@ -12,6 +12,8 @@ const expected = new URL(location.href).searchParams;
 let mount: HostedViewMount | null = null;
 let tool: Partial<ToolViewProps> = {};
 let frozen = false, disposed = false, composing = false;
+let resizeObserver: ResizeObserver | undefined;
+let resizeFrame = 0, lastHeight = -1;
 const pointers = new Set<number>();
 const contribution: HostedViewContribution = {
   entry: {label: "Excalidraw", description: {zh: "手绘图稿", en: "Editable drawings"}, kind: "workspace"},
@@ -23,7 +25,24 @@ function render() {
   document.body.toggleAttribute("data-ds-dark-theme", mount.theme === "dark");
   document.getElementById("root")!.inert = frozen;
   const p = {session: {sessionId: mount.sessionId}, contentId: mount.contentId ?? "", locale: mount.locale, visible: mount.visible !== false};
-  root.render(mount.kind === "controller" ? null : mount.kind === "tool" ? <DiagramToolView {...p} call={tool.call ?? {text: ""}} result={tool.result} running={tool.running ?? false} openPanel={alias => { void hostCall("openPanel", {kind: "editor", contentId: alias.replace(/^diagram:/, ""), title: "Excalidraw"}); }} /> : mount.kind === "workspace" ? <DiagramWorkspace {...p} /> : <DiagramEditor {...p} />);
+  root.render(mount.kind === "controller" ? null : mount.kind === "tool" ? <DiagramToolView {...p} hostToolCard={!!mount.hostUi?.toolCard} call={tool.call ?? {text: ""}} result={tool.result} running={tool.running ?? false} openPanel={alias => { void hostCall("openPanel", {kind: "editor", contentId: alias.replace(/^diagram:/, ""), title: "Excalidraw"}); }} /> : mount.kind === "workspace" ? <DiagramWorkspace {...p} /> : <DiagramEditor {...p} />);
+}
+function observeToolSize() {
+  document.body.dataset.mountKind = "tool";
+  const element = document.getElementById("root")!;
+  const report = () => {
+    cancelAnimationFrame(resizeFrame);
+    resizeFrame = requestAnimationFrame(() => {
+      if (disposed) return;
+      // Measure our own content only. Viewport height/scrollHeight would feed the
+      // host iframe height back into itself and prevent shrinking.
+      const height = Math.min(4096, Math.ceil(element.getBoundingClientRect().height));
+      if (height === lastHeight) return;
+      lastHeight = height;
+      void hostCall("resize", {height}).catch(() => {});
+    });
+  };
+  resizeObserver = new ResizeObserver(report); resizeObserver.observe(element); report();
 }
 function busy() { return composing || pointers.size > 0 || canvasBusy() || modelStatus().busy; }
 async function flush() {
@@ -40,7 +59,10 @@ async function handle(method: string, input: any) {
     case "initialize":
       if (mount) throw new Error("Already initialized");
       if (!input || !["controller", "workspace", "editor", "tool"].includes(input.kind) || typeof input.sessionId !== "string" || !["zh", "en"].includes(input.locale) || !["light", "dark"].includes(input.theme)) throw new Error("Invalid mount");
-      mount = input; render();
+      mount = input;
+      if (mount!.kind === "tool" && mount!.hostUi?.toolCard) await hostCall("toolPresentation", {title: "create view"});
+      if (mount!.kind === "tool" && mount!.hostUi?.autoResize) observeToolSize();
+      render();
       // Complete initialization with an actual status from this realm, not a host
       // assumption or a timer race. Unknown registrations remain fail-closed.
       await hostCall("changed", {...modelStatus(), busy: busy()});
@@ -83,7 +105,7 @@ const timer = setInterval(() => {
   if (text !== prior) { prior = text; void hostCall("changed", status).catch(() => {}); }
 }, 150);
 function cleanup(closePort = true) {
-  disposed = true; clearInterval(timer); root.unmount(); disposeModels(); clearDownloads();
+  disposed = true; clearInterval(timer); resizeObserver?.disconnect(); cancelAnimationFrame(resizeFrame); root.unmount(); disposeModels(); clearDownloads();
   window.removeEventListener("message", handshake);
   window.removeEventListener("pagehide", pageHide);
   window.removeEventListener("compositionstart", compositionStart); window.removeEventListener("compositionend", compositionEnd);

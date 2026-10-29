@@ -8,7 +8,8 @@ import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {chromium} from '@playwright/test';
 const CSP = "default-src 'none'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; font-src 'self' data:; connect-src 'self'; img-src 'self' data: blob:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'self'";
-const archive=resolve(process.env.PI_EXCALIDRAW_TGZ ?? '../../artifacts/chengzhiyi-pi-excalidraw-0.1.0.tgz');
+const pkg=JSON.parse(await readFile('package.json','utf8'));
+const archive=resolve(process.env.PI_EXCALIDRAW_TGZ ?? `../../artifacts/${pkg.name.replace('@','').replace('/','-')}-${pkg.version}.tgz`);
 const dir=await mkdtemp(join(tmpdir(),'excalidraw-csp-'));
 execFileSync('tar',['-xzf',archive,'-C',dir]);
 const root=join(dir,'package');
@@ -67,6 +68,14 @@ try {
       if(e.data.input.action==='sync'){window.draft.scene=e.data.input.input.scene;window.draft.revision++;}
       if(['get','sync'].includes(e.data.input.action))value=window.draft;
      }
+     // Mirror the documented host download service. Exports intentionally no
+     // longer navigate this strict-CSP iframe to their blob URL.
+     if(e.data.method==='downloadDrawing'){
+      const {blob,name}=e.data.input;
+      if(!(blob instanceof Blob)||!blob.size||blob.size>16*1024*1024||typeof name!=='string'||/[/\\\x00-\x1f]/.test(name))throw new Error('Invalid test download');
+      const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;
+      document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);
+     }
      channel.port1.postMessage({type:'response',id:e.data.id,ok:true,value});
     }};channel.port1.start();
     frame.contentWindow.postMessage({type:'pi:hosted:connect',protocol:1,pluginId:'excalidraw',generation:7,mountId:'csp'},origin,[channel.port2]);
@@ -95,6 +104,13 @@ try {
  for(const font of fonts) assert.ok(packagedFonts.some(bytes=>bytes.equals(font)),'embedded partition must be byte-exact original, not degraded');
  // Browser font decoder validates complete embedded bytes, not merely their header.
  await frame.evaluate(async fonts=>{for(const [i,data] of fonts.entries())await new FontFace(`CSP-${i}`,`url(data:font/woff2;base64,${data})`).load();},fonts.map(f=>f.toString('base64')));
+ // Older hosts omit hostUi: the fallback is a real browser modal, not inline
+ // text. It remains frame-local, with browser focus containment and Escape.
+ const parameters=frame.getByRole('button',{name:'View parameters',exact:true});
+ await parameters.click();const details=frame.getByRole('dialog',{name:'Drawing tool parameters',exact:true});
+ await details.waitFor();assert.equal(await details.evaluate(e=>e.open),true);
+ await page.keyboard.press('Escape');await details.waitFor({state:'detached'});
+ assert.equal(await parameters.evaluate(e=>document.activeElement===e),true);
  await rpc('dispose');
  frame=await mount('editor');await frame.locator('.excalidraw').waitFor();
  await frame.getByTestId('main-menu-trigger').click();

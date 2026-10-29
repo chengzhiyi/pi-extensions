@@ -41,6 +41,7 @@
     "test": "node --experimental-transform-types --test test/*.test.ts test/*.test.mjs",
     "verify": "node scripts/verify.mjs",
     "test:browser": "node test/frame.browser.mjs",
+    "test:shadow": "node test/shadow-dom.browser.mjs",
     "test:csp": "node test/csp.browser.mjs",
     "test:independent": "node scripts/independent-build.mjs"
   },

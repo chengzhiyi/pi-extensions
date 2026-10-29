@@ -1,5 +1,8 @@
 # @chengzhiyi/pi-excalidraw
 
+See [frontend architecture and UI negotiation](https://github.com/chengzhiyi/pi-extensions/blob/main/packages/excalidraw/FRONTEND.md) for host-owned cards,
+page-level parameters, lifecycle/compatibility and the Shadow DOM feasibility probe.
+
 Hosted v2 Excalidraw package. Migrated from `pi-webapp-excalidraw` diagrams at source HEAD `d87f24e`, including `b01b6bb` persistence/grouping changes. No host-private imports, shared React, direct checkpoint writes, workspace filesystem access, account, collaboration, image attachments or external embeds.
 
 ## Install and update in pi-webapp

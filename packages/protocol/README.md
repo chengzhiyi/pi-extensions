@@ -1,5 +1,11 @@
 # @chengzhiyi/pi-web-protocol
 
+Hosted v2 frame mounts support optional `hostUi` services. See the Excalidraw
+package's [frontend contract](https://github.com/chengzhiyi/pi-extensions/blob/main/packages/excalidraw/FRONTEND.md) for data-only tool
+presentation/resize/notification messages and lifecycle constraints. These
+additions retain runtime protocol 1, require no new backend capability and are
+ignored by older hosts/frames. The v1 contract below is unchanged.
+
 Versioned contract shared by pi-webapp and Pi packages with browser UI. A package declares `piWebapp: { "apiVersion": 1, "client": "./dist/client.js", "style": "./dist/client.css" }`; its browser ES module default exports one `defineWebPlugin` result with a required synchronous `activate(context)` method.
 
 Client contributions declare slots, commands, and menu items. Actions execute in the matching Pi session through `registerWebActions`; plugins never receive the bridge token or Pi's raw event bus in their browser-facing API.

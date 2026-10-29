@@ -69,7 +69,14 @@ export interface HostedViewMount {
   contentId?: string;
   visible?: boolean;
   title?: string;
+  /** Optional data-only host UI services. Frames must retain their legacy UI when absent. */
+  hostUi?: { toolCard?: true; autoResize?: true; notifications?: true };
 }
+/** UI messages use the same mount/generation-bound private MessagePort as actions. */
+export type HostedUiRequest =
+  | { method: "toolPresentation"; input: { title: string } }
+  | { method: "resize"; input: { height: number } }
+  | { method: "notify"; input: { message: string; level: "info" | "error" } };
 export interface HostedViewContribution {
   entry: { label: string; description: { zh: string; en: string }; kind: string };
   panels: string[];

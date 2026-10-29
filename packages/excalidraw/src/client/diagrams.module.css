@@ -9,6 +9,7 @@
    native Help remains available in the main menu. */
 .canvas :global(.App-toolbar__extra-tools-dropdown .dropdown-menu-container > div:not([class])), .canvas :global(.help-icon) { display: none !important; }
 .artifact { margin: 14px 0; width: 100%; min-width: 0; border: 1px solid var(--diagram-border); border-radius: 12px; overflow: hidden; }
+:global([data-host-tool-card]) .artifact { box-sizing: border-box; margin: 0; border: 0; border-radius: 0; }
 .toolHeader { display: flex; align-items: center; gap: 8px; padding: 8px 12px; color: var(--diagram-muted); border-bottom: 1px solid var(--diagram-border); font-size: 12px; }
 .toolHeader button { border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; padding: 6px; border-radius: 6px; }
 .toolHeader button:hover { background: var(--dsw-alias-interactive-bg-hover); }
