@@ -1,6 +1,6 @@
 {
   "name": "@chengzhiyi/pi-plan-mode",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -71,7 +71,7 @@
     "micromark-util-types": "^2.0.2"
   },
   "piRelease": {
-    "source": "57e6109af2e8e191a2ced5904f1692db3c199a25",
-    "fingerprint": "c5218825c3ddd8de79609413477169112385de96845698e5e11fc69c5ee636f7"
+    "fingerprint": "91b1cd0db27da67d8b9508f4156061884b6413496398fd9d91e6c09f41899256",
+    "source": "d419333729106787d069ca9617a7637b66d4280d"
   }
 }
