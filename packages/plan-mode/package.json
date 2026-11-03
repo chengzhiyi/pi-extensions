@@ -71,7 +71,7 @@
     "micromark-util-types": "^2.0.2"
   },
   "piRelease": {
-    "fingerprint": "91b1cd0db27da67d8b9508f4156061884b6413496398fd9d91e6c09f41899256",
-    "source": "d419333729106787d069ca9617a7637b66d4280d"
+    "source": "d419333729106787d069ca9617a7637b66d4280d",
+    "fingerprint": "91b1cd0db27da67d8b9508f4156061884b6413496398fd9d91e6c09f41899256"
   }
 }
