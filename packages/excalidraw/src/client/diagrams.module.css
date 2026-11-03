@@ -31,6 +31,18 @@
 .artifact > [hidden] { display: none; }
 .previewViewport { position: relative; max-height: 540px; min-height: 180px; overflow: auto; background: var(--diagram-bg); }
 .previewViewport img, .streamImage { display: block; width: 100%; height: auto; }
+/* Panel loading/failure: centered, muted, never pinned to the top-left corner. */
+.placeholder { box-sizing: border-box; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; height: 100%; min-height: 180px; padding: 24px; text-align: center; color: var(--diagram-muted, var(--text-secondary)); font-size: 12px; }
+.placeholder p { margin: 0; max-width: 420px; overflow-wrap: anywhere; }
+.placeholderTitle { color: var(--diagram-fg, var(--text-primary)); font-size: 13px; font-weight: 500; }
+.placeholder button { margin-top: 4px; padding: 6px 14px; border: 1px solid var(--diagram-border, var(--border-default)); border-radius: 7px; color: var(--diagram-fg, var(--text-primary)); background: transparent; font-size: 12px; }
+.placeholder button:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.placeholder button:focus-visible { outline: 2px solid #818cf8; outline-offset: 2px; }
+/* Quick loads show nothing; only a slow one fades in a faint spinner. */
+.spinner { width: 18px; height: 18px; border: 2px solid var(--diagram-border, var(--border-default)); border-top-color: var(--diagram-muted, var(--text-secondary)); border-radius: 50%; opacity: 0; animation: fadeIn .2s ease .6s forwards, spin .8s linear infinite; }
+@keyframes fadeIn { to { opacity: .8; } }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation: fadeIn .2s ease .6s forwards; } }
 .previewPlaceholder { display: grid; place-items: center; min-height: 180px; padding: 20px; font-size: 12px; color: var(--diagram-muted); }
 .editButton { position: absolute; top: 12px; right: 12px; box-shadow: 0 1px 4px #0001; }
 .editButton, .review button, .dialog button, .recovery button, .error button { padding: 7px 11px; border: 1px solid var(--diagram-border); border-radius: 7px; color: var(--diagram-fg); background: var(--diagram-bg); cursor: pointer; font: inherit; font-size: 12px; }
