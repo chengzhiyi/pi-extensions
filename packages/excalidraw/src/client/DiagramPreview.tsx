@@ -144,7 +144,9 @@ export function DiagramPreview({ sessionId, id, title, locale, open, header, col
     {header(state.unavailable)}
     <div id={bodyId} hidden={collapsed}>
     <div className={css.previewViewport} data-diagram-preview>
-      {image && !state.unavailable ? <img src={image} alt={title} data-scene-revision={renderedKey} /> : <div className={css.previewPlaceholder}>{state.unavailable ? t("此历史图稿没有可用内容。", "No content is available for this historical drawing.") : error || state.error || "Excalidraw…"}</div>}
+      {image && !state.unavailable ? <img src={image} alt={title} data-scene-revision={renderedKey} /> : state.unavailable ? <div className={css.previewPlaceholder}>{t("此历史图稿没有可用内容。", "No content is available for this historical drawing.")}</div>
+        // Loading stays quiet like the panel: a late, faint spinner. A failure stops it and is reported once, by the alert below.
+        : <div className={css.previewPlaceholder} role="status" aria-busy={!(error || state.error)} aria-label={t("正在加载 Excalidraw", "Loading Excalidraw")}>{!(error || state.error) && <span className={css.spinner} />}</div>}
       {state.unavailable ? <button onClick={open}>{t("恢复选项", "Recovery options")}</button> : <button className={css.editButton} onClick={open} aria-label={t("编辑 Excalidraw", "Edit Excalidraw")}>{t("编辑 ↗", "Edit ↗")}</button>}
     </div>
     {candidate && !initial && !state.unavailable && <div className={css.review} role="status"><span>{stale ? t("修改已过期，原图已保留", "Edits are stale; original preserved") : t("AI 修改预览", "AI edit preview")}</span>
