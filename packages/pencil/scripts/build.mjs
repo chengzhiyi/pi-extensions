@@ -3,7 +3,7 @@
 import { build } from 'esbuild';
 import { build as viteBuild } from 'vite';
 import { createRequire } from 'node:module';
-import { readFile, writeFile, mkdir, rm, cp, readdir, stat } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, rm, cp, readdir, stat, realpath } from 'node:fs/promises';
 import { dirname, join, extname, relative } from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -23,7 +23,12 @@ await rm(dist, { recursive: true, force: true });
 // names in dist/assets/; the backend reads those same files, so nothing large ships twice.
 const fonts = await buildCjkFonts(join(root, '.cache/fonts'));
 const ckDir = pkgDir('canvaskit-wasm', fromCore);
-await viteBuild({ configFile: join(root, 'vite.config.mjs'), logLevel: 'warn' });
+// Every module the frame bundles, for the third-party notices.
+const frameModules = new Set();
+const collect = { name: 'pencil-collect-modules', generateBundle(_, bundle) {
+  for (const chunk of Object.values(bundle)) for (const id of chunk.moduleIds ?? Object.keys(chunk.modules ?? {})) frameModules.add(id);
+} };
+await viteBuild({ configFile: join(root, 'vite.config.mjs'), logLevel: 'warn', plugins: [collect] });
 for (const need of ['canvaskit.wasm', 'harfbuzz-subset.wasm', 'InterVariable.ttf', ...fonts.files.map((f) => f.file)]) {
   if (!(await stat(join(assets, need)).catch(() => null))) throw new Error(`Frame build did not emit shared asset ${need}`);
 }
@@ -93,7 +98,37 @@ if (!patches.some((p) => p.startsWith('headless.js'))) throw new Error('Headless
 const banned = /[/\\]node_modules[/\\]elkjs[/\\]/;
 const backendInputs = Object.keys(backend.metafile.inputs).filter((p) => banned.test(p));
 if (backendInputs.length) throw new Error(`License gate: ${backendInputs.join(', ')}`);
+// Third-party notices: the license files of every package either bundle includes, plus the
+// OFL texts of the fonts that ship (OpenPencil's assets and the Noto Sans SC subsets).
+await writeFile(join(dist, 'THIRD-PARTY-NOTICES.txt'), await notices([...frameModules, ...Object.keys(backend.metafile.inputs).map((p) => join(root, p))]));
+
 const mime = { '.cjs': 'text/javascript', '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html', '.json': 'application/json', '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf', '.otf': 'font/otf', '.wasm': 'application/wasm', '.txt': 'text/plain', '.png': 'image/png', '.svg': 'image/svg+xml' };
+async function packageRoot(file) {
+  for (let dir = dirname(file); dirname(dir) !== dir; dir = dirname(dir)) {
+    try { const manifest = JSON.parse(await readFile(join(dir, 'package.json'), 'utf8')); if (manifest.name && manifest.version) return { dir, manifest }; } catch {}
+  }
+  return null;
+}
+async function notices(inputs) {
+  const packages = new Map();
+  for (const input of inputs) {
+    const path = input.replace(/^\0+/, '').split('?')[0];
+    if (!/[/\\]node_modules[/\\]/.test(path)) continue;
+    const pkg = await packageRoot(await realpath(path).catch(() => path));
+    if (pkg && !packages.has(`${pkg.manifest.name}@${pkg.manifest.version}`)) packages.set(`${pkg.manifest.name}@${pkg.manifest.version}`, pkg);
+  }
+  let text = 'Third-party notices for @chengzhiyi/pi-pencil\n\nGenerated at build time from the packages bundled into dist/.\n';
+  for (const [, { dir, manifest }] of [...packages].sort(([a], [b]) => a.localeCompare(b))) {
+    text += `\n--- ${manifest.name} ${manifest.version} (${manifest.license ?? 'see upstream'}) ---\n`;
+    for (const file of (await readdir(dir)).filter((f) => /^(licen[cs]e|copying|notice)(\.|-|$)/i.test(f)).sort()) text += `${(await readFile(join(dir, file), 'utf8')).trim()}\n`;
+  }
+  const coreAssets = join(coreDir, 'assets');
+  for (const file of (await readdir(coreAssets)).filter((f) => f.endsWith('-OFL.txt')).sort()) {
+    text += `\n--- Font: ${file.replace(/-OFL\.txt$/, '')} (OFL-1.1), shipped from @open-pencil/core/assets ---\n${(await readFile(join(coreAssets, file), 'utf8')).trim()}\n`;
+  }
+  text += `\n--- Font: Noto Sans SC (OFL-1.1), subset at build time from @expo-google-fonts/noto-sans-sc ---\nCopyright 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'.\nThis Font Software is licensed under the SIL Open Font License, Version 1.1 (text above, https://openfontlicense.org).\n`;
+  return text;
+}
 async function walk(dir) { const out = []; for (const e of await readdir(dir, { withFileTypes: true })) { const p = join(dir, e.name); if (e.isDirectory()) out.push(...await walk(p)); else out.push(p); } return out; }
 const files = [];
 for (const path of (await walk(dist)).sort()) {
