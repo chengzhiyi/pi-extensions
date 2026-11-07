@@ -6,6 +6,9 @@ import { mkdtemp, cp, rm, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import http from 'node:http'; import https from 'node:https'; import net from 'node:net';
 
 const sha = (b) => createHash('sha256').update(b).digest('hex');
@@ -46,6 +49,10 @@ const LOGIN = [
   { op: 'create', ref: '$button', parent: '$screen', type: 'FRAME', props: { name: 'Primary button', fill: '#4F46E5', radius: 12, sizingH: 'FILL', layout: { mode: 'HORIZONTAL', justify: 'CENTER', align: 'CENTER', padding: { top: 14, bottom: 14 } } } },
   { op: 'create', ref: '$buttonText', parent: '$button', type: 'TEXT', props: { text: { content: '登录', font: { style: 'Medium', size: 16 }, color: '#FFFFFF' } } },
 ];
+
+// This tests the packaged build. CI runs the tests before `pnpm build`, so build it first when dist/ is missing.
+const packageDir = fileURLToPath(new URL('..', import.meta.url));
+if (!existsSync(join(packageDir, 'dist/resources.json'))) execFileSync(process.execPath, ['scripts/build.mjs'], { cwd: packageDir, stdio: 'inherit' });
 
 test('packaged backend: propose → render → accept → save .fig → reopen; human-only, stale, locks; no network', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'pencil-pkg-')); t.after(() => rm(dir, { recursive: true, force: true }));
