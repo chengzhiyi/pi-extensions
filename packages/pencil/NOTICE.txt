@@ -1,0 +1,11 @@
+Third-party notices
+
+This package bundles, unmodified except for the build-time adapters described in scripts/build.mjs:
+
+- OpenPencil (@open-pencil/core, @open-pencil/vue, @open-pencil/scene-graph, @open-pencil/kiwi) 0.17.0-beta.2, MIT, Copyright (c) 2026 Danila Poyarkov and OpenPencil contributors.
+- CanvasKit (canvaskit-wasm) 0.41.1, BSD-3-Clause, Copyright Google LLC.
+- harfbuzzjs 1.6.4, MIT.
+- Vue 3.5.45 (MIT), Reka UI 2.11.0 (MIT) and Lucide icons (ISC).
+- The fonts Inter, Caveat, Noto Naskh Arabic, Noto Sans Symbols and OpenPencil Emoji Metrics, shipped from @open-pencil/core/assets, and subsets of Noto Sans SC made at build time. All are under the SIL Open Font License 1.1.
+
+The complete license texts of every bundled package, and the font licenses, are generated at build time into dist/THIRD-PARTY-NOTICES.txt.

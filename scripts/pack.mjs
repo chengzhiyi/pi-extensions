@@ -20,7 +20,8 @@ export function validatePackedPackage(tarball, expected, versions) {
     assert.equal(resources.version, 1);
     assert(Array.isArray(resources.files) && resources.files.length <= 4096);
     for (const item of resources.files) {
-      assert(/^\.\/dist\/(?:[\w.-]+\/)*[\w.-]+\.(?:js|css|html|json|woff2?|ttf|txt)$/.test(item.path) && !item.path.split('/').slice(1).some(p => p === '.' || p === '..'), 'Uncontrolled resource');
+      // Same types the host serves for hosted plugins (wasm, cjs and otf since pi-webapp 0.1.55).
+      assert(/^\.\/dist\/(?:[\w.-]+\/)*[\w.-]+\.(?:js|cjs|css|html|json|woff2?|ttf|otf|wasm|txt)$/.test(item.path) && !item.path.split('/').slice(1).some(p => p === '.' || p === '..'), 'Uncontrolled resource');
       const path = `package/${item.path.slice(2)}`;
       assert(!allowed.has(path), 'Duplicate resource'); allowed.add(path);
       const bytes = execFileSync('tar', ['-xOf', tarball, path], {maxBuffer: 64 * 1024 * 1024});
