@@ -1,0 +1,120 @@
+[
+  {
+    "op": "create",
+    "ref": "$screen",
+    "parent": "$page",
+    "type": "FRAME",
+    "props": {
+      "name": "Login",
+      "width": 390,
+      "height": 844,
+      "fill": "#FFFFFF",
+      "layout": {
+        "mode": "VERTICAL",
+        "gap": 16,
+        "padding": {
+          "top": 64,
+          "right": 24,
+          "bottom": 24,
+          "left": 24
+        }
+      }
+    }
+  },
+  {
+    "op": "create",
+    "ref": "$title",
+    "parent": "$screen",
+    "type": "TEXT",
+    "props": {
+      "name": "Title",
+      "text": {
+        "content": "登录 / ログイン",
+        "font": {
+          "family": "Noto Sans SC",
+          "style": "Bold",
+          "size": 28
+        },
+        "color": "#111827"
+      }
+    }
+  },
+  {
+    "op": "create",
+    "ref": "$email",
+    "parent": "$screen",
+    "type": "FRAME",
+    "props": {
+      "name": "Email",
+      "fill": "#F3F4F6",
+      "radius": 12,
+      "sizingH": "FILL",
+      "stroke": {
+        "color": "#E5E7EB",
+        "weight": 1
+      },
+      "layout": {
+        "mode": "HORIZONTAL",
+        "padding": {
+          "top": 14,
+          "right": 16,
+          "bottom": 14,
+          "left": 16
+        }
+      }
+    }
+  },
+  {
+    "op": "create",
+    "ref": "$emailText",
+    "parent": "$email",
+    "type": "TEXT",
+    "props": {
+      "text": {
+        "content": "邮箱 Email",
+        "font": {
+          "size": 16
+        },
+        "color": "#9CA3AF"
+      },
+      "sizingH": "FILL"
+    }
+  },
+  {
+    "op": "create",
+    "ref": "$button",
+    "parent": "$screen",
+    "type": "FRAME",
+    "props": {
+      "name": "Primary button",
+      "fill": "#4F46E5",
+      "radius": 12,
+      "sizingH": "FILL",
+      "layout": {
+        "mode": "HORIZONTAL",
+        "justify": "CENTER",
+        "align": "CENTER",
+        "padding": {
+          "top": 14,
+          "bottom": 14
+        }
+      }
+    }
+  },
+  {
+    "op": "create",
+    "ref": "$buttonText",
+    "parent": "$button",
+    "type": "TEXT",
+    "props": {
+      "text": {
+        "content": "登录",
+        "font": {
+          "style": "Medium",
+          "size": 16
+        },
+        "color": "#FFFFFF"
+      }
+    }
+  }
+]
