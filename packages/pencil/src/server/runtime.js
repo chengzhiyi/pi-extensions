@@ -8,7 +8,7 @@ import { pencilTools, reference, validateOps, ID } from '../contract/tools.js';
 import { preconditions, conflicts } from './rebase.js';
 
 const ASSETS = new URL('./assets/', import.meta.url).href;
-const HUMAN_ONLY = new Set(['accept', 'reject', 'save', 'open', 'selection', 'sync', 'lock']);
+const HUMAN_ONLY = new Set(['accept', 'reject', 'save', 'open', 'create', 'rename', 'selection', 'sync', 'lock']);
 const MAX_FIG_BYTES = 32 * 1024 * 1024;
 const MAX_PROPOSALS = 20;
 const sha = (b) => createHash('sha256').update(b).digest('hex');
@@ -193,6 +193,26 @@ export const createRuntime = (ctx) => {
         await writeRecord('index', idx.rec, { docs: [...idx.docs, docId] });
         await writeRecord(`design.${docId}`, { revision: 0 }, design);
         return { docId, rev: design.rev, nodes: project(graph, graph.getPages()[0].id, 1).length };
+      }
+      case 'create': {
+        // A person starts a design without the agent: blank, or from the edits they already made in an
+        // empty editor (snapshot validated like a sync). It is an ordinary design from rev 1 on.
+        const title = input.title === undefined ? 'Untitled' : typeof input.title === 'string' && input.title.trim() && input.title.length <= 120 ? input.title.trim() : fail('Invalid title', 400, 'invalid_input');
+        if (input.fig !== undefined && (typeof input.fig !== 'string' || input.fig.length > MAX_FIG_BYTES * 1.4)) fail('Invalid document', 400, 'invalid_input');
+        const graph = input.fig ? await readFig(unb64(input.fig)) : newGraph();
+        const docId = randomUUID().slice(0, 8);
+        const design = { schema: 1, docId, title, rev: 1, fig: b64(await writeFig(graph)), path: null, diskHash: null, savedRev: null, proposals: [], batches: [{ kind: 'human', appliedRev: 1, before: null }] };
+        await writeRecord(`design.${docId}`, { revision: 0 }, design);
+        const idx = await index();
+        await writeRecord('index', idx.rec, { docs: [...idx.docs, docId] });
+        return { docId, rev: design.rev, title };
+      }
+      case 'rename': {
+        const rec = await loadDesign(input.docId); const design = rec.value;
+        const title = typeof input.title === 'string' && input.title.trim() && input.title.length <= 120 ? input.title.trim() : fail('Invalid title', 400, 'invalid_input');
+        design.title = title;
+        await writeRecord(`design.${design.docId}`, rec, design);
+        return { docId: design.docId, title, rev: design.rev };
       }
       case 'sync': {
         // Human edits from the editor frame (snapshot sync; Yjs replica is S6). Never merges silently:

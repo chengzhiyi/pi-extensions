@@ -63,19 +63,21 @@
   },
   "devDependencies": {
     "@chengzhiyi/pi-web-protocol": "workspace:*",
+    "@expo-google-fonts/noto-sans-sc": "0.4.4",
     "@open-pencil/core": "0.17.0-beta.2",
+    "@open-pencil/kiwi": "0.17.0-beta.2",
     "@open-pencil/scene-graph": "0.17.0-beta.2",
     "@open-pencil/vue": "0.17.0-beta.2",
-    "@open-pencil/kiwi": "0.17.0-beta.2",
-    "canvaskit-wasm": "0.41.1",
-    "harfbuzzjs": "1.6.4",
-    "vue": "3.5.45",
-    "vite": "8.3.6",
-    "@vitejs/plugin-vue": "6.0.10",
-    "esbuild": "0.28.2",
-    "typescript": "7.0.2",
-    "@types/node": "22.19.19",
     "@playwright/test": "1.63.0",
-    "@expo-google-fonts/noto-sans-sc": "0.4.4"
+    "@types/node": "22.19.19",
+    "@vitejs/plugin-vue": "6.0.10",
+    "canvaskit-wasm": "0.41.1",
+    "esbuild": "0.28.2",
+    "harfbuzzjs": "1.6.4",
+    "lucide-vue-next": "1.0.0",
+    "reka-ui": "2.11.0",
+    "typescript": "7.0.2",
+    "vite": "8.3.6",
+    "vue": "3.5.45"
   }
 }

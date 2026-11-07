@@ -46,6 +46,32 @@ Evidence:
 - `spike-real-model.png` (the real model's accepted design, re-rendered from the saved `.fig`);
 - `.cache/spike/s1.json`, `.cache/probe/report.json` (regenerate with the commands below).
 
+## Real host mount (follow-up)
+
+The loop test above used a hand-written parent, which hid real-host bugs: in pi-webapp the plugin was unusable (frames stuck at `connecting…`; dev rebuilds failing with `view_barrier`). `test/browser/hosted-pencil-mount.spec.ts` (host repo) now runs the built App's `HostedFrame` → `FrameAdapter` + `HostedViewClient` against a real bridge/manager/worker, with pencil as a dev root wired like `hosted-dev.json`. It fails on the committed build and passes after these fixes (4/4 repeats):
+
+1. **Handshake race (root cause).** The host posts its one-shot `pi:hosted:connect` on the iframe `load` event, and `load` does not wait for async module evaluation. The editor graph has a top-level `await` (Yoga's WASM init in the layout chunk), so `connectHost` sometimes ran after the message and the mount never initialized. Fix: `main.js` is a tiny entry with no TLA dependencies that registers the handshake first and imports the editor (`app.js`) dynamically. The hidden controller mount never loads CanvasKit, Yoga or fonts.
+2. **Freeze returned a Vue reactive proxy** (`DataCloneError`, the original `view_barrier`). All MessagePort payloads are plain JSON now.
+3. **Lifecycle semantics.** `initialize` validates and awaits a real status report; status reports are serialized (a late `busy` report can no longer reach the server after the freeze ack); `freeze` flushes, stops polling/sync and makes the shell inert; `restore` checks the snapshot's session and resumes; `update` rejects a session change; `dispose` flushes.
+4. **Workspace mount** received the workbench's own `contentId` (`"workspace"`) and treated it as a design ID (`design_unavailable`). Only editor mounts name a design; an empty workspace now polls until the agent's first design appears. Added "Open in tab" (panel alias `pencil:<docId>`) so the editor mount is reachable.
+
+Covered: controller/workspace/editor mounts; accept through a real view capability; a dev rebuild while an edit is inside the 800 ms debounce (the freeze flushes it, every view remounts on the new generation, the edit survives); a rebuild refused after the freeze (unreviewed tool name), where the host resumes and each frozen view is restored, stays live and syncs; then a normal switch again.
+
+## Full editor UI (follow-up)
+
+The frame used to be a bare canvas plus a review sidebar, and a design could only start from an agent proposal. It now has OpenPencil's editing UI, and a person can design without the agent.
+
+- **Approach.** The official app's panels can't be reused as-is: the toolbar, layers/pages, properties panel and menu bar together import 1,218 files (~100k lines), including AI chat, cloud, collaboration, Tauri and CodeMirror, through the app's global stores. Instead `src/client/editor/` builds the same layout from the SDK's headless primitives (`@open-pencil/vue`: Toolbar, PageList, LayerTree, PositionControls, LayoutControls, AppearanceControls, TypographyControls, property lists, menu model, command registry, ColorPicker) with reka-ui (already the SDK's dependency, pinned to the same 2.11.0) and lucide icons (ISC). Theme tokens are copied from the app's `tokens.css` (MIT, credited in `theme.css`); light/dark follows the system; labels use the SDK's own i18n (zh-CN when the browser is Chinese).
+- **What's there.** Menu bar (File, then the SDK's Edit / View / Object / Text / Arrange with shortcuts), document name (double-click to rename) with a designs switcher and "New design", Pages (add, rename, delete), Layers (select, multi-select, expand, drag to reorder/nest, visibility, lock, rename), floating toolbar (move, frame/section, rectangle/line/ellipse/polygon/star, pen/pencil, text, hand), Design panel (page background; Position with align/flip/rotate; Layout with auto layout, direction, gap, padding, alignment, W/H with Hug/Fill/Fixed and aspect lock, clip content; Appearance; Typography; Fill; Stroke with weight/align; Effects), rulers themed like the app, keyboard shortcuts from the SDK registry plus tool keys, nudge, delete and an in-frame copy/paste, and in-canvas text editing. Agent proposals moved to an "Agent" tab with a pending count; it comes forward when a new proposal arrives.
+- **Not carried over** (app-only): AI chat tab (pi-webapp's chat is the AI; the Agent tab sits where the official AI tab is), comments, variables editor, components/assets panel, frame presets, sharing, collaboration.
+- **Second pass.** Code tab (Design JSX, React + Tailwind, HTML through core's own IO formats, live while editing), Inspect/Lint tab (core `lint`, recommended preset, page or selection, click to select), Export section (`useExport` settings; PNG/JPG/WebP/SVG through the host's `downloadDrawing` relay, which now also accepts JPG and WebP), boolean operations for a multi-selection.
+- **Follows the host.** Theme and language come from the mount's `theme`/`locale` (sent on connect and on every `update`), not the system: pi-webapp's dark mode and 中文 apply to the editor, rulers and SDK labels. Standalone it still follows the system and browser.
+- **SDK gap.** `@open-pencil/vue`'s hidden text-edit input is styled only with Tailwind classes; without them it renders at the end of `<body>` and focusing it scrolled the editor. A plain-CSS rule restores the intended fixed, invisible input.
+- **Designs without the agent.** New human-only backend actions `create` (blank, or from the edits a person already made in an empty workspace) and `rename`. In an empty workspace the editor is live: the first edit creates the design at rev 1. The host's reviewed pencil policy gains `create` and `rename`; `create` is also a checkpoint action, because a freeze can flush those first edits.
+- **Responsive.** In a host sidebar (~600 px) Pages/Layers become a drawer opened from the canvas corner; under 560 px the Design panel does too. In the hosted frame the toolbar sits at the top of the canvas, because pi-webapp's floating chat composer docks at the bottom centre of the panel and the frame can't see it.
+- **Boot cost.** Creating the first WebGL context while the browser composites the full UI stalled the main thread (745 ms on an M1 Pro, Metal; 1.6 s under SwiftShader). The panels now mount once the canvas has its context: fixture first paint is 387 ms on Metal (286 ms for a bare canvas). Under the CSP harness's SwiftShader the number is now ~2–5 s (4.9 s after the second pass), which mostly measures software rasterisation of the panels.
+- **Tests.** The real-host spec gains "a person designs by hand": draw a rectangle with the toolbar (creates the design), set W and the fill hex in the Design panel (reaches the backend), rename, create and switch designs, check the full-width layout, then the agent proposes against the person's design. `loop.browser` also covers host theme/locale updates, text editing without scroll, Code (Tailwind + HTML), Inspect, and a PNG export through the host relay.
+
 ## What changed
 
 ### Host (`pi-webapp-spike-pencil`, uncommitted)
@@ -55,7 +81,7 @@ Evidence:
 - **H4** `tool-result.ts`: an optional `{"$hosted":"tool-result"}` envelope becomes SDK text and image blocks. Limits: ≤ 4 images, ≤ 2 MiB each, PNG/JPEG/WebP signature checked. Everything else keeps the old JSON-text conversion.
 - **H7** reviewed `runtime.invokeTimeoutMs` (120 s for pencil).
 - **H8 (dev only)**: a reviewed `PENCIL` policy and a `dev-plugins.ts › KNOWN` entry. No production catalog card.
-- Tests: new `test/hosted-pencil-spike.test.ts` (6) and `test/hosted-pencil-e2e.test.ts` (1, needs `PI_PENCIL_TGZ`). Updated two assertions that list the known plugin IDs.
+- Tests: new `test/hosted-pencil-spike.test.ts` (6), `test/hosted-pencil-e2e.test.ts` (1, needs `PI_PENCIL_TGZ`) and `test/browser/hosted-pencil-mount.spec.ts` (real App + view protocol; needs a built `packages/pencil`). Updated two assertions that list the known plugin IDs.
 - `hosted-*` suites + broker parity: **192 pass, 6 fail, 3 skipped (201)**. All 6 also fail on the untouched base: they need `pi-extensions/packages/github`, which doesn't exist in this checkout (dev-root switch, GitHub e2e, 4 launcher stop/restart tests). Two assertions that list known plugin IDs were updated for pencil.
 
 ### Plugin (`packages/pencil`)
@@ -63,7 +89,7 @@ Evidence:
 - `src/adapter/ops.js` (PencilOp → typed Figma Plugin API; enforces locks and task scope).
 - `src/contract/tools.js` (5 tools, flat schemas).
 - `src/server/runtime.js` (proposals, human-only actions, CAS state).
-- `src/client/*` (Vue frame on `@open-pencil/vue`, hosted handshake).
+- `src/client/*` (Vue frame on `@open-pencil/vue`, hosted handshake); `src/client/editor/*` (the editor UI, see "Full editor UI").
 - Build adapters, all hash/count-checked and failing closed on upstream drift:
   - core `raster/headless.js` and `text/font/bundled.js` resolve through `node_modules`; they are pointed into `dist/`;
   - `elkjs` is stubbed (EPL/GPL);
@@ -106,6 +132,7 @@ pnpm pack --pack-destination ../../artifacts
 # pi-webapp-spike-pencil
 node --import ./test/setup-env.mjs --experimental-strip-types --test test/hosted-pencil-spike.test.ts
 PI_PENCIL_TGZ=…/artifacts/chengzhiyi-pi-pencil-0.0.1.tgz node --import ./test/setup-env.mjs --experimental-strip-types --test test/hosted-pencil-e2e.test.ts
+npx playwright test test/browser/hosted-pencil-mount.spec.ts   # PI_PENCIL_ROOT defaults to ../pi-extensions/packages/pencil
 # real model (uses your ~/.pi/agent auth via symlink; isolated sessions)
 PI_PENCIL_REAL=1 PI_PENCIL_MODEL=gpt-5.6-luna PI_PENCIL_TGZ=… PI_PENCIL_REAL_OUT=…/packages/pencil/.cache/real \
   node --import ./test/setup-env.mjs --experimental-strip-types --test test/hosted-pencil-real.test.ts
