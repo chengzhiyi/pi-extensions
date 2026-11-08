@@ -1,6 +1,6 @@
 {
   "name": "@chengzhiyi/pi-pencil",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Agent-assisted UI design plugin for pi-webapp, built on OpenPencil",
   "type": "module",
   "license": "MIT",
