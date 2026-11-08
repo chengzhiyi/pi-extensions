@@ -21,7 +21,12 @@ function commit(e) { const v = e.target.value.trim(); renaming.value = false; if
 <template>
   <aside class="op-left" data-testid="left-panel">
     <div class="op-header">
-      <span class="op-logo" aria-hidden="true">P</span>
+      <span class="op-logo" aria-hidden="true" title="OpenPencil">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 19C5 11 10 6 18 6" stroke-width="2" /><path d="M18 6h-6" stroke-width="1.5" />
+          <rect x="3" y="17" width="4" height="4" rx="0.8" fill="currentColor" stroke="none" /><rect x="16" y="4" width="4" height="4" rx="0.8" fill="currentColor" stroke="none" /><circle cx="10.5" cy="6" r="1.6" fill="currentColor" stroke="none" />
+        </svg>
+      </span>
       <input v-if="renaming" data-doc-rename class="op-docname-input" :value="ui.title" @blur="commit" @keydown.stop="(e) => { if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') renaming = false; }" />
       <span v-else class="op-docname truncate" data-testid="doc-name" :title="t('双击重命名', 'Double-click to rename')" @dblclick="startRename">{{ ui.title || panels.untitled || 'Untitled' }}</span>
       <DropdownMenuRoot v-if="hosted" :modal="false">

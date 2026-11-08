@@ -48,8 +48,16 @@ export async function figmaFor(graph) {
 
 export function newGraph() { return new SceneGraph(); }
 
-export async function readFig(bytes) {
-  const { graph } = await new IORegistry(BUILTIN_IO_FORMATS).readDocument({ name: 'design.fig', data: bytes });
+export async function readFig(bytes) { return readDocument(bytes, 'design.fig'); }
+
+/** Document formats a person can import (OpenPencil's readers): Figma, FigJam, Pencil, draw.io. Mermaid is left out: its layout needs elkjs, which is not bundled (license). */
+export const IMPORT_EXTENSIONS = ['fig', 'jam', 'pen', 'drawio', 'dio'];
+
+/** Read any importable document; the format comes from the file name's extension. */
+export async function readDocument(bytes, name) {
+  const ext = String(name).toLowerCase().split('.').pop();
+  if (!IMPORT_EXTENSIONS.includes(ext)) throw Object.assign(new Error(`Unsupported file type .${ext}; import ${IMPORT_EXTENSIONS.map((e) => `.${e}`).join(', ')}`), { unsupported: true });
+  const { graph } = await new IORegistry(BUILTIN_IO_FORMATS).readDocument({ name: `design.${ext}`, data: bytes });
   graph.applyDerivedLayoutDuring(() => computeAllLayouts(graph));
   return graph;
 }

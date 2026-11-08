@@ -29,6 +29,10 @@ export function useEditorKeyboard(editor, { enabled = () => true } = {}) {
   function onKey(e) {
     if (!enabled() || typing(e) || editor.state.editingTextId || e.isComposing) return;
     const mod = isMac ? e.metaKey : e.ctrlKey;
+    // ⌥⌘↩ (Alt+Ctrl+Enter elsewhere) starts and stops the preview, as in OpenPencil.
+    if (mod && e.altKey && !e.shiftKey && e.code === 'Enter') { e.preventDefault(); editor.togglePlay(); return; }
+    // While previewing only leaving the view is a shortcut; keys belong to the live controls.
+    if (editor.state.canvasView?.id === 'play') { if (e.key === 'Escape') { e.preventDefault(); editor.stopPlay(); } return; }
     if (mod && !e.shiftKey && !e.altKey && (e.code === 'KeyC' || e.code === 'KeyX')) { e.preventDefault(); void copy(e.code === 'KeyX'); return; }
     if (mod && !e.shiftKey && !e.altKey && e.code === 'KeyV') { if (clipboard) { e.preventDefault(); void editor.pasteFromHTML(clipboard); } return; }
     for (const [binding, id] of bindings) if (matches(binding, e)) { e.preventDefault(); runCommand(id); return; }

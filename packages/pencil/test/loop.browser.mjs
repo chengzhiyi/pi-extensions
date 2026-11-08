@@ -1,7 +1,7 @@
 // Human–agent loop in a real browser: the built editor frame (per-plugin CSP) talks the hosted-v2
 // handshake + MessagePort protocol to a parent page; its `action` calls reach the packaged backend
 // runtime (in-memory broker with host semantics). Agent tool calls are issued from Node.
-// Covers: review panel accept/reject, human edit sync, field-level rebase, conflicts, locks,
+// Covers: agent changes applied onto the canvas with an undo toast, human edit sync, undo, locks, preview,
 // selection scope, .fig save, zero CSP violations/external requests.
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
@@ -85,76 +85,78 @@ const steps = [];
 const step = (name, data) => { steps.push({ name, ...data }); console.log(`✔ ${name}`, data ? JSON.stringify(data) : ''); };
 try {
   const LOGIN = JSON.parse(await readFile(new URL('./fixtures/login-ops.json', import.meta.url), 'utf8'));
-  const first = await agent('propose', { title: 'Login screen', ops: LOGIN });
-  const docId = first.docId;
-
   const page = await browser.newPage({ viewport: { width: 1280, height: 860 } });
   page.on('request', (r) => { if (!r.url().startsWith(origin) && !/^(data|blob):/.test(r.url())) issues.external.push(r.url()); });
   page.on('pageerror', (e) => issues.pageErrors.push(String(e.message).slice(0, 300)));
   await page.addInitScript(() => document.addEventListener('securitypolicyviolation', (e) => { (globalThis.__csp ??= []).push(`${e.violatedDirective} ${e.blockedURI}`); }));
   await page.goto(origin + '/');
   const frame = await (await page.waitForSelector('#f')).contentFrame();
-  const ui = () => frame.evaluate(() => ({ ...globalThis.__pencil.ui, proposals: globalThis.__pencil.ui?.proposals?.map((p) => ({ id: p.id, title: p.title })), conflicts: globalThis.__pencil.ui?.conflicts }));
+  const ui = () => frame.evaluate(() => ({ ...globalThis.__pencil.ui, proposals: globalThis.__pencil.ui?.proposals?.map((p) => ({ id: p.id, title: p.title })), conflicts: globalThis.__pencil.ui?.conflicts, changes: globalThis.__pencil.ui?.changes?.map((c) => ({ ...c })), toast: globalThis.__pencil.ui?.toast ? { ...globalThis.__pencil.ui.toast } : null }));
   const until = async (test, what, ms = 20_000) => { const t = Date.now(); for (;;) { const v = await ui().catch(() => null); if (v && test(v)) return v; if (Date.now() - t > ms) throw new Error(`timeout: ${what} — ${JSON.stringify(v)?.slice(0, 400)}`); await new Promise((r) => setTimeout(r, 150)); } };
+  await frame.waitForFunction(() => globalThis.__pencil?.ready === true, null, { timeout: 30_000 });
+
+  // The agent's first design appears on the open, empty canvas by itself, with an undo toast.
+  const first = await agent('apply', { title: 'Login screen', ops: LOGIN });
+  const docId = first.docId;
+  assert.equal(first.rev, 1);
   const nodes = async () => (await agent('inspect', { docId, depth: 4 })).nodes;
   const byName = async (name) => (await nodes()).find((x) => x.untrusted.name === name);
   const backend = async () => invoke('action', 'get', { docId });
   const human = (fn, arg) => frame.evaluate(fn, arg);
+  const shown = await until((u) => u.docId === docId && u.rev === 1 && u.toast?.title === 'Login screen', 'agent design shown on the canvas');
+  const canvas = await human(() => { const e = globalThis.__pencil.editor, g = e.graph, page = g.getPages()[0];
+    return { login: (g.getNode(page.id).childIds ?? []).some((id) => g.getNode(id)?.name === 'Login'), selected: [...e.state.selectedIds].map((id) => g.getNode(id)?.name) }; });
+  assert.deepEqual(canvas, { login: true, selected: ['Login'] }, 'the new screen is on the canvas and selected');
+  assert.equal(await frame.locator('[data-testid="agent-toast"]').isVisible(), true);
+  assert.equal(shown.proposals.length, 0, 'nothing waits for review');
+  await page.screenshot({ path: new URL('1-applied.png', OUT).pathname });
+  step('agent change applied straight onto the canvas (selected, toast with Undo)', { rev: shown.rev });
 
-  await until((u) => u.docId === docId && u.proposals?.length === 1, 'frame lists the first proposal');
-  step('frame loaded design and shows 1 pending proposal', { rev: (await ui()).rev });
-
-  await frame.click('[data-testid="accept"]');
-  const accepted = await until((u) => u.rev === 1 && !u.working, 'accept applied');
-  assert.match(accepted.message, /Applied/);
-  const hasLogin = await human(() => { const g = globalThis.__pencil.editor.graph; const page = g.getPages()[0]; return (g.getNode(page.id).childIds ?? []).some((id) => g.getNode(id)?.name === 'Login'); });
-  assert.equal(hasLogin, true, 'the editor replica shows the accepted screen');
-  await page.screenshot({ path: new URL('1-accepted.png', OUT).pathname });
-  step('human clicked Accept → rev 1 in backend and editor', { message: accepted.message, editorHasLogin: hasLogin });
-
-  // Agent proposes a recolor (base rev 1); human renames the title meanwhile → rebase.
+  // A person's edit syncs and retires the toast: the agent change is no longer the one to undo.
   const button = await byName('Primary button'), title = await byName('Title');
-  const recolor = await agent('propose', { docId, baseRev: 1, title: 'Green button', ops: [{ op: 'update', id: button.id, props: { fill: '#16A34A' } }] });
-  await human((id) => globalThis.__pencil.editor.updateNodeWithUndo(id, { name: 'Heading' }), title.id);
-  await until((u) => u.rev === 2 && u.proposals.some((p) => p.id === recolor.proposalId), 'human edit synced and recolor listed');
-  assert.equal((await byName('Heading'))?.id, title.id, 'backend has the human rename');
-  step('human edit synced from the editor', { backendRev: (await backend()).rev });
-  await frame.click(`[data-proposal="${recolor.proposalId}"] [data-testid="accept"]`);
-  const rebased = await until((u) => u.rev === 3 && !u.working, 'rebased accept');
-  assert.match(rebased.message, /rebased onto your edits/);
-  assert.equal((await byName('Heading'))?.id, title.id, 'human rename survived the agent batch');
-  await page.screenshot({ path: new URL('2-rebased.png', OUT).pathname });
-  step('stale proposal accepted with field-level rebase; human edit preserved', { message: rebased.message });
-
-  // Conflict: agent and human both rename the title.
-  const rename = await agent('propose', { docId, baseRev: 3, title: 'Agent title', ops: [{ op: 'update', id: title.id, props: { name: 'Agent Title' } }] });
   await human((id) => globalThis.__pencil.editor.updateNodeWithUndo(id, { name: 'Human Title' }), title.id);
-  await until((u) => u.rev === 4 && u.proposals.some((p) => p.id === rename.proposalId), 'second human edit synced');
-  await frame.click(`[data-proposal="${rename.proposalId}"] [data-testid="accept"]`);
-  const conflicted = await until((u) => !u.working && u.conflicts?.length > 0, 'conflict shown');
-  assert.equal((await byName('Human Title'))?.id, title.id, 'nothing applied on conflict');
-  assert.equal((await backend()).rev, 4);
-  await page.screenshot({ path: new URL('3-conflict.png', OUT).pathname });
-  step('same-field conflict shown in the review panel; nothing applied', { message: conflicted.message, conflicts: conflicted.conflicts });
+  await until((u) => u.rev === 2 && !u.toast, 'human edit synced, toast gone');
+  assert.equal((await byName('Human Title'))?.id, title.id, 'backend has the human rename');
+  step('human edit synced from the editor', { backendRev: (await backend()).rev });
 
-  // Lock from the editor toolbar; agent can no longer touch the button.
+  // The agent recolors the button; the person undoes it from the canvas toast.
+  await agent('apply', { docId, baseRev: 2, title: 'Green button', ops: [{ op: 'update', id: button.id, props: { fill: '#16A34A' } }] });
+  await until((u) => u.rev === 3 && u.toast?.title === 'Green button', 'recolor shown');
+  const fill = () => human((id) => { const f = globalThis.__pencil.editor.graph.getNode(id)?.fills?.[0]?.color; return f ? [f.r, f.g, f.b].map((c) => Math.round(c * 255)).join(',') : null; }, button.id);
+  assert.equal(await fill(), '22,163,74', 'the editor shows the agent recolor');
+  await frame.click('[data-testid="agent-undo"]');
+  const undone = await until((u) => u.rev === 4 && !u.working && !u.toast, 'undo applied');
+  assert.match(undone.message, /Undid|撤销/);
+  assert.notEqual(await fill(), '22,163,74', 'recolor undone in the editor');
+  assert.equal((await byName('Human Title'))?.id, title.id, 'the human rename survived the undo');
+  assert.deepEqual(undone.changes.map((c) => [c.title, c.reverted]), [['Green button', true], ['Login screen', false]]);
+  await page.screenshot({ path: new URL('2-undone.png', OUT).pathname });
+  step('agent change undone from the canvas toast; human edit preserved', { message: undone.message });
+
+  // Lock from the Agent tab; the agent can no longer touch the button.
+  await frame.click('[data-testid="tab-review"]');
   await human((id) => globalThis.__pencil.editor.select([id]), button.id);
   await frame.click('[data-testid="lock"]');
   await until((u) => /Locked 1 layer/.test(u.message ?? '') && !u.working, 'lock applied');
-  await assert.rejects(agent('propose', { docId, title: 'x', ops: [{ op: 'update', id: button.id, props: { radius: 0 } }] }), (e) => e.reason === 'node_locked');
-  step('human locked the button from the toolbar; agent proposal refused (node_locked)');
+  await assert.rejects(agent('apply', { docId, title: 'x', ops: [{ op: 'update', id: button.id, props: { radius: 0 } }] }), (e) => e.reason === 'node_locked');
+  step('human locked the button; agent change refused (node_locked)');
 
   // Scope agent to a selection.
   const email = await byName('Email');
   await human((id) => globalThis.__pencil.editor.select([id]), email.id);
   await frame.click('[data-testid="scope"]');
   await until((u) => /only the 1 selected/.test(u.message ?? '') && !u.working, 'scope set');
-  await assert.rejects(agent('propose', { docId, title: 'x', ops: [{ op: 'update', id: title.id, props: { name: 'Nope' } }] }), (e) => e.reason === 'out_of_scope');
-  const scoped = await agent('propose', { docId, title: 'Rounder email', ops: [{ op: 'update', id: email.id, props: { radius: 20 } }] });
-  await until((u) => u.proposals.some((p) => p.id === scoped.proposalId), 'scoped proposal listed');
-  await frame.click(`[data-proposal="${scoped.proposalId}"] [data-testid="reject"]`);
-  await until((u) => /Rejected/.test(u.message ?? '') && !u.proposals.some((p) => p.id === scoped.proposalId), 'reject');
-  step('scope to selection enforced; scoped proposal rejected from the panel');
+  await assert.rejects(agent('apply', { docId, title: 'x', ops: [{ op: 'update', id: title.id, props: { name: 'Nope' } }] }), (e) => e.reason === 'out_of_scope');
+  const scoped = await agent('apply', { docId, title: 'Rounder email', ops: [{ op: 'update', id: email.id, props: { radius: 20 } }] });
+  await until((u) => u.rev === scoped.rev && u.changes?.[0]?.title === 'Rounder email', 'scoped change shown');
+  assert.equal(await frame.locator('[data-testid="changes"] li').first().locator('[data-testid="undo"]').isVisible(), true, 'the Agent tab offers undo for the latest change');
+  await frame.click('[data-testid="unscope"]');
+  await until((u) => /whole design|整个设计/.test(u.message ?? '') && !u.working, 'scope lifted');
+  const lifted = await agent('apply', { docId, title: 'Note', ops: [{ op: 'create', ref: '$note', parent: '$page', type: 'TEXT', props: { x: -600, y: -200, text: { content: 'note' } } }] });
+  assert.equal(lifted.status, 'applied', '"Whole design" gives the agent the page again');
+  await until((u) => u.rev === lifted.rev && !u.working, 'note shown'); // the editor selects fresh agent changes: let it settle first
+  step('scope to selection enforced; scoped change applied and listed; lifting the limit restores the whole design');
+
 
   await frame.click('[data-testid="save"]');
   const saved = await until((u) => /Saved designs\//.test(u.message ?? ''), 'save');
@@ -204,6 +206,81 @@ try {
   assert.equal(file.name, 'Primary button.png'); assert.equal(file.type, 'image/png'); assert.ok(file.size > 100);
   step('Export downloads the selection as PNG through the host', file);
   await page.screenshot({ path: new URL('5-panels.png', OUT).pathname });
+
+  // Preview is OpenPencil's play view on the canvas: the editing UI goes away, it keeps the host theme (dark by
+  // now), and instances of components with a behaviour run as live controls. The agent builds a switch the way
+  // its read_me teaches (two variants + switch behaviour) and places it in the screen.
+  await frame.evaluate(() => globalThis.__pencil.flush()); // let the person's last edit (export setting) sync first
+  const readMe = await agent('reference', {});
+  const screenNode = await byName('Login');
+  const built = await agent('apply', { docId, title: 'Wi-Fi switch', ops: readMe.interactiveExample.ops.map((o) => o.ref === '$wifi' ? { ...o, parent: screenNode.id } : o) });
+  await until((u) => u.rev === built.rev && !u.working, 'agent switch shown');
+  assert.deepEqual(await human(() => { const e = globalThis.__pencil.editor; return [...e.state.selectedIds].map((id) => e.graph.getNode(id)?.name); }), ['Login'],
+    'the editor shows the screen the switch went into, not its hidden source variants');
+  await frame.click('[data-testid="present"]');
+  await frame.waitForSelector('[data-testid="play-bar"]');
+  const preview = await frame.waitForFunction(() => {
+    const islands = [...document.querySelectorAll("[data-test-id='play-islands'] > div > *")];
+    const control = islands.map((el) => el.shadowRoot?.querySelector('[role="switch"]')).find(Boolean);
+    if (!control || [...document.fonts].some((f) => f.status === 'loading')) return null;
+    const color = (value) => { const el = document.createElement('span'); el.style.color = value; document.body.append(el); const c = getComputedStyle(el).color; el.remove(); return c; };
+    const root = getComputedStyle(document.documentElement);
+    return { view: globalThis.__pencil.editor.state.canvasView.id, islands: islands.length, control: control.getAttribute('role'), checked: control.getAttribute('aria-checked'),
+      leftHidden: getComputedStyle(document.querySelector('[data-testid="left-panel"]')).display === 'none',
+      fonts: ['Noto Sans SC', 'Inter'].map((family) => [...document.fonts].some((f) => f.family.replace(/"/g, '') === family && f.status === 'loaded')),
+      barFollowsTheme: getComputedStyle(document.querySelector('[data-testid="play-bar"]')).backgroundColor === color(root.getPropertyValue('--color-panel').trim()),
+      theme: document.documentElement.dataset.theme };
+  }, null, { timeout: 20_000 }).then((h) => h.jsonValue());
+  assert.deepEqual(preview, { view: 'play', islands: 1, control: 'switch', checked: 'false', leftHidden: true, fonts: [true, true], barFollowsTheme: true, theme: 'dark' });
+  // The live switch takes the pointer and flips; the editor does not (no selection, no edits while previewing).
+  const before = await frame.evaluate(() => globalThis.__pencil.ui.rev);
+  const box = await frame.evaluate(() => { const el = [...document.querySelectorAll("[data-test-id='play-islands'] > div > *")].map((e) => e.shadowRoot?.querySelector('[role="switch"]')).find(Boolean); const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; });
+  const offset = await page.evaluate(() => { const r = document.querySelector('#f').getBoundingClientRect(); return { x: r.x, y: r.y }; });
+  await page.mouse.click(offset.x + box.x, offset.y + box.y);
+  await frame.waitForFunction(() => [...document.querySelectorAll("[data-test-id='play-islands'] > div > *")].map((el) => el.shadowRoot?.querySelector('[role="switch"]')).find(Boolean)?.getAttribute('aria-checked') === 'true');
+  await page.keyboard.press('Delete'); // the screen is still selected from the agent's change: it must survive
+  await new Promise((r) => setTimeout(r, 1200)); // past the 800 ms sync debounce
+  assert.equal(await human(() => [...(globalThis.__pencil.editor.graph.getAllNodes?.() ?? globalThis.__pencil.editor.graph.nodes.values())].some((n) => n.name === 'Login')), true, 'keys do not edit the design while previewing');
+  assert.equal(await frame.evaluate(() => globalThis.__pencil.ui.rev), before, 'nothing synced while previewing');
+  await page.screenshot({ path: new URL('6-preview.png', OUT).pathname });
+  await frame.click('[data-testid="play-reset"]');
+  assert.equal(await frame.evaluate(() => globalThis.__pencil.editor.state.canvasView.id), 'play', 'Reset restarts the controls and stays in preview');
+  await frame.waitForFunction(() => [...document.querySelectorAll("[data-test-id='play-islands'] > div > *")].map((el) => el.shadowRoot?.querySelector('[role="switch"]')).find(Boolean)?.getAttribute('aria-checked') === 'false');
+  await page.keyboard.press('Escape');
+  await frame.waitForSelector('[data-testid="play-bar"]', { state: 'detached' });
+  assert.equal(await frame.locator('[data-testid="left-panel"]').isVisible(), true, 'Esc returns to the editor');
+  assert.equal(await frame.evaluate(() => globalThis.__pencil.ui.rev) >= before, true);
+  step('agent-built switch runs live in Preview (click turns it on, Reset turns it off) in the host theme; Esc leaves', { ...preview, afterClick: 'true' });
+
+  // File → Import from computer (.pen), drop a .fig onto the editor, then File → Open workspace file
+  // on the saved design: each import is a new design; opening a file that is already open switches to it.
+  const originalDoc = await frame.evaluate(() => globalThis.__pencil.ui.docId);
+  const docCount = async () => (await ui()).docs.length;
+  const before0 = await docCount();
+  const fileMenu = () => frame.click('.op-menubar-trigger >> nth=0');
+  await fileMenu(); await frame.click('[data-testid="file-import"]');
+  const pen = { version: '2.6', children: [{ type: 'frame', id: 'card', name: 'Imported card', x: 0, y: 0, width: 240, height: 120, fill: '#0EA5E9' }] };
+  await frame.setInputFiles('[data-testid="import-input"]', { name: 'Card.pen', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(pen)) });
+  const imported = await until((u) => /Imported “Card”/.test(u.message ?? ''), 'import .pen');
+  assert.notEqual(imported.docId, originalDoc);
+  assert.equal(await docCount(), before0 + 1);
+  assert.equal(await human(() => [...globalThis.__pencil.editor.graph.getAllNodes()].some((n) => n.name === 'Imported card')), true, 'the imported design is on the canvas');
+  await frame.evaluate(async (b64) => {
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    const dt = new DataTransfer(); dt.items.add(new File([bytes], 'Dropped.fig'));
+    const target = document.querySelector('[data-testid="left-panel"]');
+    for (const type of ['dragenter', 'dragover', 'drop']) target.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt }));
+  }, onDisk.toString('base64'));
+  await until((u) => /Imported “Dropped”/.test(u.message ?? ''), 'drop .fig');
+  assert.equal(await docCount(), before0 + 2);
+  await fileMenu(); await frame.click('[data-testid="file-open"]');
+  await frame.fill('[data-testid="open-path"]', saveRec.path);
+  await frame.click('[data-testid="open-submit"]');
+  const reopenedUi = await until((u) => /already open/.test(u.message ?? ''), 'open workspace file');
+  assert.equal(reopenedUi.docId, originalDoc, 'opening the saved file switches back to its design');
+  assert.equal(await docCount(), before0 + 2, 'no duplicate design');
+  await frame.waitForSelector('[data-testid="open-dialog"]', { state: 'detached' });
+  step('File → Import (.pen), drop a .fig, File → Open workspace file (switches to the open design)', { docs: await docCount() });
 
   issues.violations = await frame.evaluate(() => globalThis.__csp ?? []);
   const hostLog = await page.evaluate(() => window.hostLog.map(([m]) => m));

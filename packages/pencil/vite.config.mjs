@@ -7,11 +7,23 @@ import { readdirSync } from 'node:fs';
 const pnpmDir = fileURLToPath(new URL('../../node_modules/.pnpm/', import.meta.url));
 const cssomDir = readdirSync(pnpmDir).filter((d) => d.startsWith('@acemir+cssom@')).sort().at(-1);
 const cssomLib = join(pnpmDir, cssomDir, 'node_modules/@acemir/cssom/lib/index.js');
+// The SDK reads CanvasRoot's showRulers once, at mount, and its ruler drawing never consults the play
+// view, so OpenPencil's preview kept the editing rulers. Skip them while the canvas plays. Exact-source
+// match: an upstream change fails the build instead of silently dropping the patch.
+const RULERS_NEEDLE = 'shouldShowRulers(), options?.layer ?? "full"';
+const playHidesRulers = {
+  name: 'pencil-play-hides-rulers', enforce: 'pre',
+  transform(code, id) {
+    if (!/@open-pencil[\\/]vue[\\/]dist[\\/]canvas[\\/]surface[\\/]lifecycle\.js$/.test(id)) return null;
+    if (code.split(RULERS_NEEDLE).length !== 2) this.error('@open-pencil/vue canvas/surface/lifecycle.js changed: re-check the play-hides-rulers patch');
+    return { code: code.replace(RULERS_NEEDLE, 'shouldShowRulers() && view.canvasView?.id !== "play", options?.layer ?? "full"'), map: null };
+  },
+};
 // Frame build. assetsInlineLimit 0: never inline WASM/fonts as data: URLs (CSP connect-src 'self').
 export default defineConfig({
   root: fileURLToPath(new URL('./src/client/', import.meta.url)),
   base: './',
-  plugins: [vue()],
+  plugins: [playHidesRulers, vue()],
   resolve: {
     alias: [
       // cssom's package.json "browser" points at a browserified bundle without ESM named exports.

@@ -62,13 +62,13 @@ export function connectHost() {
   });
 }
 const contribution = {
-  entry: { label: 'Pencil', description: { zh: 'UI 设计', en: 'UI design' }, kind: 'workspace' },
-  panels: ['workspace', 'editor'], artifactTools: ['pencil_propose_changes'], toolViews: [], panelAlias: { prefix: 'pencil:', kind: 'editor', title: 'Pencil' },
+  entry: { label: 'OpenPencil', description: { zh: 'UI 设计', en: 'UI design' }, kind: 'workspace' },
+  panels: ['workspace', 'editor'], artifactTools: ['pencil_apply_changes'], toolViews: [], panelAlias: { prefix: 'pencil:', kind: 'editor', title: 'OpenPencil' },
 };
 const KINDS = ['controller', 'workspace', 'editor', 'tool'];
 async function flush() {
   await lifecycle.flush?.();
-  if (host.dirty || host.busy) throw new Error('Pencil edits are still syncing; try again');
+  if (host.dirty || host.busy) throw new Error('OpenPencil edits are still syncing; try again');
   await reportStatus();
   return { dirty: false, busy: false };
 }
@@ -92,7 +92,7 @@ async function handle(method, input) {
     case 'freeze':
       await flush();
       host.frozen = true; await lifecycle.freeze?.();
-      if (host.dirty || host.busy) { host.frozen = false; await lifecycle.restore?.(); throw new Error('Pencil changed while freezing'); }
+      if (host.dirty || host.busy) { host.frozen = false; await lifecycle.restore?.(); throw new Error('OpenPencil changed while freezing'); }
       return { mount: plain(host.mount), undoClearedOnReopen: true };
     case 'restore':
       if (!host.mount || input?.mount?.sessionId !== host.mount.sessionId) throw new Error('Snapshot scope mismatch');
