@@ -1,26 +1,75 @@
-// pi-pencil backend runtime (spike). Authoritative design documents live here (headless
-// open-pencil core in the host's Node child process). Agent writes are proposals; only human
-// frame actions (kind:"action") accept, reject or save.
+// OpenPencil backend runtime. Authoritative design documents live here (headless open-pencil
+// core in the host's Node child process). Agent writes apply directly as new revisions; only the
+// person's frame actions (kind:"action") revert, save, sync or lock. Proposals stored by older
+// builds can still be accepted or rejected.
 import { randomUUID, createHash } from 'node:crypto';
-import { initEngine, figmaFor, newGraph, readFig, writeFig, layout, renderPng, project } from '../adapter/engine.js';
+import { initEngine, figmaFor, newGraph, readFig, readDocument, writeFig, layout, renderPng, project } from '../adapter/engine.js';
 import { applyOps, OpError } from '../adapter/ops.js';
 import { pencilTools, reference, validateOps, ID } from '../contract/tools.js';
-import { preconditions, conflicts } from './rebase.js';
+import { conflicts } from './rebase.js';
 
 const ASSETS = new URL('./assets/', import.meta.url).href;
-const HUMAN_ONLY = new Set(['accept', 'reject', 'save', 'open', 'create', 'rename', 'selection', 'sync', 'lock']);
+const HUMAN_ONLY = new Set(['accept', 'reject', 'revert', 'save', 'open', 'import', 'upload', 'create', 'rename', 'selection', 'sync', 'lock']);
 const MAX_FIG_BYTES = 32 * 1024 * 1024;
 const MAX_PROPOSALS = 20;
+// The host caps one frame action at 2 MB of JSON, so the frame sends bigger inputs (an imported file,
+// a large design's sync) as `upload` chunks, then the action with `{ $upload: id }` in their place.
+const MAX_UPLOAD_CHARS = Math.ceil(MAX_FIG_BYTES * 1.4) + 64 * 1024, MAX_UPLOAD_CHUNKS = 64, MAX_UPLOADS = 4, UPLOAD_TTL_MS = 5 * 60_000;
+// Shape of a stored design record (state key `design.<docId>`). Bump it with a step in migrate().
+export const DESIGN_SCHEMA = 1;
 const sha = (b) => createHash('sha256').update(b).digest('hex');
 const b64 = (u8) => Buffer.from(u8).toString('base64');
 const unb64 = (s) => new Uint8Array(Buffer.from(s, 'base64'));
 class PencilError extends Error { constructor(message, status = 400, reason) { super(message); this.status = status; this.reason = reason; } }
 const fail = (message, status, reason) => { throw new PencilError(message, status, reason); };
+/** Bring a stored design record up to DESIGN_SCHEMA. Records from a newer build are refused, never rewritten. */
+export function migrate(value) {
+  if (!value) return value;
+  const from = Number.isInteger(value.schema) ? value.schema : 1;
+  if (from > DESIGN_SCHEMA) fail(`Design ${value.docId} was saved by a newer pi-pencil (schema ${from}); update the plugin to open it`, 409, 'schema_newer');
+  // schema 1: fields added after the first spike default to empty.
+  const v = { ...value, schema: DESIGN_SCHEMA };
+  v.proposals ??= []; v.batches ??= []; v.path ??= null; v.diskHash ??= null; v.savedRev ??= null;
+  return v;
+}
+const titleOf = (name) => String(name).split('/').pop().replace(/\.[^.]+$/, '').trim().slice(0, 120) || 'Untitled';
 const id = (v, what) => (typeof v === 'string' && new RegExp(ID).test(v) ? v : fail(`Invalid ${what}`, 400, 'invalid_input'));
 
 export const createRuntime = (ctx) => {
   let disposed = false;
   let queue = Promise.resolve();
+  const uploads = new Map(); // id → { owner, total, chunks, chars, at }
+
+  function receiveChunk(input, scope) {
+    const now = Date.now();
+    for (const [key, u] of uploads) if (now - u.at > UPLOAD_TTL_MS) uploads.delete(key);
+    const { id: uploadId, index, total, data } = input;
+    if (typeof uploadId !== 'string' || !/^[\w-]{8,64}$/.test(uploadId) || !Number.isInteger(total) || total < 1 || total > MAX_UPLOAD_CHUNKS
+      || !Number.isInteger(index) || index < 0 || index >= total || typeof data !== 'string') fail('Invalid upload chunk', 400, 'invalid_input');
+    let u = uploads.get(uploadId);
+    if (!u) {
+      if (uploads.size >= MAX_UPLOADS) fail('Too many uploads in progress', 429, 'busy');
+      u = { owner: scope?.sessionId, total, chunks: Array(total).fill(undefined), chars: 0, at: now }; uploads.set(uploadId, u);
+    }
+    if (u.owner !== scope?.sessionId || u.total !== total) fail('Upload does not match', 409, 'invalid_input');
+    if (u.chunks[index] === undefined) u.chars += data.length;
+    else u.chars += data.length - u.chunks[index].length;
+    if (u.chars > MAX_UPLOAD_CHARS) { uploads.delete(uploadId); fail(`Upload is larger than ${MAX_FIG_BYTES / 1024 / 1024} MB`, 413, 'too_large'); }
+    u.chunks[index] = data; u.at = now;
+    return { received: u.chunks.filter((c) => c !== undefined).length, total };
+  }
+  /** An action's input sent as chunks: `{ $upload: id }` → the parsed JSON, once every chunk arrived. */
+  function uploaded(input, scope) {
+    if (typeof input?.$upload !== 'string') return input;
+    const u = uploads.get(input.$upload);
+    uploads.delete(input.$upload);
+    if (!u || u.owner !== scope?.sessionId) fail('Upload expired or unknown; try again', 410, 'upload_missing');
+    if (u.chunks.some((c) => c === undefined)) fail('Upload incomplete; try again', 400, 'upload_missing');
+    let value;
+    try { value = JSON.parse(u.chunks.join('')); } catch { fail('Upload is not valid JSON', 400, 'invalid_input'); }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) fail('Invalid input', 400, 'invalid_input');
+    return value;
+  }
   const broker = ctx.broker;
   const ws = { scope: 'workspace' };
 
@@ -29,12 +78,12 @@ export const createRuntime = (ctx) => {
     return s ? { revision: s.revision, value: s.value } : { revision: 0, value: null };
   }
   async function writeRecord(key, rec, value, scope = ws) {
-    return broker.call('state.compareAndSwap', { key, expectedRevision: rec.revision, schema: 1, value, ...scope });
+    return broker.call('state.compareAndSwap', { key, expectedRevision: rec.revision, schema: DESIGN_SCHEMA, value, ...scope });
   }
   async function loadDesign(docId) {
     const rec = await readRecord(`design.${id(docId, 'docId')}`);
     if (!rec.value) fail(`Design ${docId} not found`, 404, 'design_unavailable');
-    return rec;
+    return { ...rec, value: migrate(rec.value) };
   }
   async function graphOf(design) { return design.fig ? readFig(unb64(design.fig)) : seedGraph(); }
   function seedGraph() { const g = newGraph(); return g; }
@@ -75,8 +124,7 @@ export const createRuntime = (ctx) => {
         const designs = [];
         for (const docId of docs.slice(0, 50)) {
           const v = (await readRecord(`design.${docId}`)).value; if (!v) continue;
-          designs.push({ docId, rev: v.rev, path: v.path, saved: v.savedRev === v.rev, untrusted: { title: v.title },
-            proposals: v.proposals.filter((p) => p.status === 'pending').map((p) => ({ id: p.id, baseRev: p.baseRev, ops: p.ops.length, untrusted: { title: p.title } })) });
+          designs.push({ docId, rev: v.rev, path: v.path, saved: v.savedRev === v.rev, untrusted: { title: v.title } });
         }
         const session = (await readRecord('session', {})).value;
         return { designs, selection: session?.selection ?? null };
@@ -89,46 +137,46 @@ export const createRuntime = (ctx) => {
       }
       case 'render': {
         const rec = await loadDesign(input.docId);
-        if (input.proposalId) {
-          const p = findProposal(rec.value, input.proposalId);
-          return result(JSON.stringify({ proposalId: p.id, status: p.status, images: p.preview.length }), p.preview);
-        }
         const graph = await graphOf(rec.value);
         const ids = input.nodeId ? [id(input.nodeId, 'nodeId')] : topFrames(graph).map((n) => n.id);
         if (!ids.length) return { message: 'Design is empty' };
         const images = await renderTargets(graph, ids, input.scale ?? 0.75);
         return result(JSON.stringify({ docId: rec.value.docId, rev: rec.value.rev, rendered: ids.slice(0, 4) }), images);
       }
-      case 'propose': {
+      case 'apply': {
+        // The agent edits the design directly: the batch is validated (locks, task scope, ids), applied
+        // and committed as a new revision that the editor shows on its canvas. The person can undo it
+        // there (action "revert"); there is no review step.
         const ops = validateOps(input.ops);
         const title = typeof input.title === 'string' && input.title.length <= 120 ? input.title : fail('title required', 400, 'invalid_input');
         let docId = input.docId, rec;
         if (docId) rec = await loadDesign(docId);
         else {
           docId = randomUUID().slice(0, 8);
-          rec = { revision: 0, value: { schema: 1, docId, title, rev: 0, fig: null, path: null, diskHash: null, savedRev: null, proposals: [] } };
+          rec = { revision: 0, value: { schema: DESIGN_SCHEMA, docId, title, rev: 0, fig: null, path: null, diskHash: null, savedRev: null, proposals: [] } };
           const idx = await index();
           await writeRecord('index', idx.rec, { docs: [...idx.docs, docId] });
         }
         const design = rec.value;
-        if (input.baseRev !== undefined && input.baseRev !== design.rev) fail(`Design is at rev ${design.rev}; inspect again and rebase`, 409, 'stale_base');
-        if (design.proposals.filter((p) => p.status === 'pending').length >= 5) fail('Too many pending proposals; wait for the human to decide', 429, 'too_many_pending');
-        // Apply to a fork to validate (locks/scope/existence) and to render the preview.
+        if (input.baseRev !== undefined && input.baseRev !== design.rev) fail(`Design is at rev ${design.rev} (the person edited it); inspect again and retry`, 409, 'stale_base');
         const graph = await graphOf(design);
         const figma = await figmaFor(graph);
         const session = (await readRecord('session', {})).value;
-        const pre = preconditions(graph, ops);
         let applied;
         try { applied = await applyOps(figma, graph, ops, { scope: session?.task?.docId === docId ? new Set(session.task.nodeIds) : null }); }
         catch (error) { if (error instanceof OpError) fail(error.message, error.status, error.reason); throw error; }
         layout(graph);
-        const previewIds = applied.roots.length ? applied.roots : topFrames(graph).filter((n) => applied.touched.some((t) => isWithin(graph, t, n.id))).map((n) => n.id);
-        const preview = await renderTargets(graph, previewIds);
-        const proposal = { id: randomUUID().slice(0, 8), title, baseRev: design.rev, ops, pre, status: 'pending', sessionId: scope.sessionId, createdAt: new Date().toISOString(), preview, touched: applied.touched.length };
-        design.proposals = [...design.proposals, proposal].slice(-MAX_PROPOSALS);
-        await writeRecord(`design.${docId}`, rec, design);
-        const text = JSON.stringify({ docId, proposalId: proposal.id, status: 'pending_review', baseRev: design.rev, createdNodes: Object.keys(applied.refs).length, message: 'Proposal created. Nothing is applied until the human accepts it in Pencil.' });
-        return result(text, preview);
+        // Show (select, zoom to, render) what the person should look at: new top-level layers, else the frames
+        // the change happened in. Source components the agent parks off to the side are only a fallback, so a
+        // new switch shows inside its screen rather than as its hidden variants.
+        const source = (nodeId) => ['COMPONENT', 'COMPONENT_SET'].includes(graph.getNode(nodeId)?.type);
+        const fresh = applied.roots.filter((nodeId) => graph.getNode(nodeId) && !source(nodeId));
+        const containing = topFrames(graph).filter((n) => !source(n.id) && applied.touched.some((t) => isWithin(graph, t, n.id))).map((n) => n.id);
+        const shownIds = fresh.length ? fresh : containing.length ? containing : applied.roots.filter((nodeId) => graph.getNode(nodeId));
+        const rev = await commitGraph(rec, design, graph, { kind: 'agent', title, ops: ops.length, nodeIds: shownIds.slice(0, 20), at: new Date().toISOString() });
+        const images = await renderTargets(graph, shownIds);
+        const text = JSON.stringify({ docId, rev, status: 'applied', createdNodes: Object.keys(applied.refs).length, nodes: applied.refs, message: 'Applied. The change is on the OpenPencil canvas now; the person can undo it there. Render it to check your work.' });
+        return result(text, images);
       }
       default: fail('Unknown tool action', 400);
     }
@@ -139,13 +187,14 @@ export const createRuntime = (ctx) => {
       case 'list': {
         const { docs } = await index();
         const out = [];
-        for (const docId of docs) { const v = (await readRecord(`design.${docId}`)).value; if (v) out.push({ docId, title: v.title, rev: v.rev, path: v.path, pending: v.proposals.filter((p) => p.status === 'pending').length }); }
+        for (const docId of docs) { const raw = (await readRecord(`design.${docId}`)).value; const v = raw && (raw.schema ?? 1) <= DESIGN_SCHEMA ? migrate(raw) : null; if (v) out.push({ docId, title: v.title, rev: v.rev, path: v.path, pending: v.proposals.filter((p) => p.status === 'pending').length }); }
         return out;
       }
       case 'get': {
         const rec = await loadDesign(input.docId); const v = rec.value;
-        if (input.sinceRev !== undefined && input.sinceRev === v.rev) return { docId: v.docId, rev: v.rev, unchanged: true, proposals: v.proposals.map(({ ops, pre, ...p }) => ({ ...p, opCount: ops.length })) };
-        return { docId: v.docId, title: v.title, rev: v.rev, path: v.path, savedRev: v.savedRev, fig: v.fig, proposals: v.proposals.map(({ ops, pre, ...p }) => ({ ...p, opCount: ops.length })) };
+        const proposals = v.proposals.map(({ ops, pre, ...p }) => ({ ...p, opCount: ops.length }));
+        if (input.sinceRev !== undefined && input.sinceRev === v.rev) return { docId: v.docId, rev: v.rev, unchanged: true, proposals };
+        return { docId: v.docId, title: v.title, rev: v.rev, path: v.path, savedRev: v.savedRev, fig: v.fig, proposals, changes: agentChanges(v) };
       }
       case 'accept': case 'reject': {
         const rec = await loadDesign(input.docId); const design = rec.value;
@@ -171,6 +220,18 @@ export const createRuntime = (ctx) => {
         const rev = await commitGraph(rec, design, graph, { kind: 'agent', proposalId: p.id });
         return { status: 'accepted', rev, rebased };
       }
+      case 'revert': {
+        // Undo the agent's latest change: only while it is still the newest revision, so nothing the
+        // person did afterwards is lost. The undo is itself a new revision.
+        const rec = await loadDesign(input.docId); const design = rec.value;
+        const last = design.batches?.at(-1);
+        if (!last || last.kind !== 'agent' || last.appliedRev !== design.rev || last.reverted) fail('Only the latest change, made by the agent and not edited since, can be undone', 409, 'not_revertible');
+        if (input.rev !== undefined && input.rev !== design.rev) fail(`Design is at rev ${design.rev}`, 409, 'stale_base');
+        const graph = last.before ? await readFig(unb64(last.before)) : newGraph();
+        last.reverted = true;
+        const rev = await commitGraph(rec, design, graph, { kind: 'revert', title: last.title });
+        return { rev, title: last.title };
+      }
       case 'save': {
         const rec = await loadDesign(input.docId); const design = rec.value;
         if (!design.fig) fail('Nothing to save', 409);
@@ -184,15 +245,35 @@ export const createRuntime = (ctx) => {
         return { path, hash: saved.hash, bytes: bytes.length, rev: design.rev };
       }
       case 'open': {
-        const path = String(input.path ?? '');
-        const file = await broker.call('workspace.read', { path, encoding: 'base64' }) ?? fail('File not found', 404);
-        const graph = await readFig(unb64(file.base64)); // validates the file
+        // A workspace .fig. Opening a file that is already open (and unchanged on disk) switches to
+        // that design instead of making a second copy of it.
+        const path = typeof input.path === 'string' ? input.path.trim().replace(/^\.?\/+/, '') : '';
+        if (!path || !path.toLowerCase().endsWith('.fig')) fail('Give a workspace path to a .fig file, e.g. designs/home.fig', 400, 'invalid_input');
+        const file = await broker.call('workspace.read', { path, encoding: 'base64' }) ?? fail(`${path} not found in the workspace`, 404, 'file_not_found');
+        const idx = await index();
+        for (const docId of idx.docs) {
+          const raw = (await readRecord(`design.${docId}`)).value;
+          if (raw?.path === path && raw.diskHash === file.hash && (raw.schema ?? 1) <= DESIGN_SCHEMA) return { docId, rev: raw.rev, title: raw.title, reused: true };
+        }
+        const graph = await readDocument(unb64(file.base64), path).catch((e) => fail(`${path} is not a readable .fig file: ${e.message}`, 400, 'invalid_file'));
         const docId = randomUUID().slice(0, 8);
-        const design = { schema: 1, docId, title: path.split('/').pop().replace(/\.fig$/, ''), rev: 1, fig: b64(await writeFig(graph)), path, diskHash: file.hash, savedRev: null, proposals: [] };
+        const design = { schema: DESIGN_SCHEMA, docId, title: titleOf(path), rev: 1, fig: b64(await writeFig(graph)), path, diskHash: file.hash, savedRev: 1, proposals: [], batches: [{ kind: 'human', appliedRev: 1, before: null }] };
+        await writeRecord(`design.${docId}`, { revision: 0 }, design);
+        await writeRecord('index', idx.rec, { docs: [...idx.docs, docId] });
+        return { docId, rev: design.rev, title: design.title, nodes: project(graph, graph.getPages()[0].id, 1).length };
+      }
+      case 'import': {
+        // A file from the person's computer (.fig, .jam, .pen, .drawio). It becomes a new
+        // design with no workspace path; Save writes it as a .fig under designs/.
+        const name = typeof input.name === 'string' && input.name.trim() ? input.name.trim() : fail('File name required', 400, 'invalid_input');
+        if (typeof input.data !== 'string' || !input.data || input.data.length > MAX_FIG_BYTES * 1.4) fail(`File must be under ${MAX_FIG_BYTES / 1024 / 1024} MB`, 413, 'too_large');
+        const graph = await readDocument(unb64(input.data), name).catch((e) => fail(e.unsupported ? e.message : `${name} could not be read: ${e.message}`, 400, e.unsupported ? 'unsupported_format' : 'invalid_file'));
+        const docId = randomUUID().slice(0, 8);
+        const design = { schema: DESIGN_SCHEMA, docId, title: titleOf(name), rev: 1, fig: b64(await writeFig(graph)), path: null, diskHash: null, savedRev: null, proposals: [], batches: [{ kind: 'human', appliedRev: 1, before: null }] };
+        await writeRecord(`design.${docId}`, { revision: 0 }, design);
         const idx = await index();
         await writeRecord('index', idx.rec, { docs: [...idx.docs, docId] });
-        await writeRecord(`design.${docId}`, { revision: 0 }, design);
-        return { docId, rev: design.rev, nodes: project(graph, graph.getPages()[0].id, 1).length };
+        return { docId, rev: design.rev, title: design.title, nodes: project(graph, graph.getPages()[0].id, 1).length };
       }
       case 'create': {
         // A person starts a design without the agent: blank, or from the edits they already made in an
@@ -201,7 +282,7 @@ export const createRuntime = (ctx) => {
         if (input.fig !== undefined && (typeof input.fig !== 'string' || input.fig.length > MAX_FIG_BYTES * 1.4)) fail('Invalid document', 400, 'invalid_input');
         const graph = input.fig ? await readFig(unb64(input.fig)) : newGraph();
         const docId = randomUUID().slice(0, 8);
-        const design = { schema: 1, docId, title, rev: 1, fig: b64(await writeFig(graph)), path: null, diskHash: null, savedRev: null, proposals: [], batches: [{ kind: 'human', appliedRev: 1, before: null }] };
+        const design = { schema: DESIGN_SCHEMA, docId, title, rev: 1, fig: b64(await writeFig(graph)), path: null, diskHash: null, savedRev: null, proposals: [], batches: [{ kind: 'human', appliedRev: 1, before: null }] };
         await writeRecord(`design.${docId}`, { revision: 0 }, design);
         const idx = await index();
         await writeRecord('index', idx.rec, { docs: [...idx.docs, docId] });
@@ -236,8 +317,11 @@ export const createRuntime = (ctx) => {
       case 'selection': {
         const rec = await readRecord('session', {});
         const selection = { docId: id(input.docId, 'docId'), nodeIds: (Array.isArray(input.nodeIds) ? input.nodeIds : []).slice(0, 100).map((n) => id(n, 'nodeId')), at: new Date().toISOString() };
-        await writeRecord('session', rec, { ...(rec.value ?? {}), selection, ...(input.task ? { task: { docId: selection.docId, nodeIds: selection.nodeIds } } : {}) }, {});
-        return selection;
+        const { task: previous, ...rest } = rec.value ?? {};
+        // task: limit the agent to these layers; clearTask: give it the whole design again.
+        const task = input.task ? { docId: selection.docId, nodeIds: selection.nodeIds } : input.clearTask ? undefined : previous;
+        await writeRecord('session', rec, { ...rest, selection, ...(task ? { task } : {}) }, {});
+        return { ...selection, scoped: !!task && task.docId === selection.docId };
       }
       default: fail('Unknown action', 400);
     }
@@ -252,14 +336,22 @@ export const createRuntime = (ctx) => {
         if (request.generation !== ctx.generation || !request.scope?.sessionId) fail('Stale generation or invalid scope', 409);
         if (!request.input || typeof request.input !== 'object' || Array.isArray(request.input)) fail('Invalid input', 400);
         if (request.kind === 'tool' && HUMAN_ONLY.has(request.action)) fail('This action is reserved for the human', 403, 'human_only');
+        if (request.kind === 'action' && request.action === 'upload') return receiveChunk(request.input, request.scope);
+        if (request.kind === 'action') request = { ...request, input: uploaded(request.input, request.scope) };
         await initEngine(ASSETS);
         return request.kind === 'tool' ? tool(request.action, request.input, request.scope) : action(request.action, request.input, request.scope);
       });
       queue = run;
       return run;
     },
-    async dispose() { disposed = true; await queue.catch(() => {}); },
+    async dispose() { disposed = true; uploads.clear(); await queue.catch(() => {}); },
   };
 };
 
+/** The agent's recent changes (newest first) for the editor; `undoable` only for the newest revision. */
+function agentChanges(design) {
+  const batches = design.batches ?? [];
+  return batches.filter((b) => b.kind === 'agent').reverse().map((b) => ({ rev: b.appliedRev, title: b.title ?? '', ops: b.ops ?? 0, nodeIds: b.nodeIds ?? [], at: b.at ?? null, reverted: !!b.reverted,
+    undoable: !b.reverted && b === batches.at(-1) && b.appliedRev === design.rev }));
+}
 function isWithin(graph, id, ancestor) { for (let n = graph.getNode(id); n; n = n.parentId ? graph.getNode(n.parentId) : null) if (n.id === ancestor) return true; return false; }

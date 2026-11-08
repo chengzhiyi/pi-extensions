@@ -25,7 +25,18 @@ export function hostCall(method, input, raw = false) {
     try { port.postMessage({ type: 'request', id, method, input: raw ? input : plain(input) }); } catch (e) { clearTimeout(timer); pending.delete(id); reject(e); }
   });
 }
-export const action = (name, input = {}) => hostCall('action', { action: name, input });
+// The host refuses a frame action over 2 MB of JSON. Bigger inputs (an imported file, a large
+// design's sync) go as `upload` chunks first; the action then names the upload instead.
+const CHUNK_CHARS = 512 * 1024, DIRECT_CHARS = 1536 * 1024;
+export async function action(name, input = {}) {
+  const json = JSON.stringify(input);
+  if (json.length <= DIRECT_CHARS && new Blob([json]).size <= DIRECT_CHARS) return hostCall('action', { action: name, input });
+  const id = crypto.randomUUID(), total = Math.ceil(json.length / CHUNK_CHARS);
+  for (let index = 0; index < total; index++) await hostCall('action', { action: 'upload', input: { id, index, total, data: json.slice(index * CHUNK_CHARS, (index + 1) * CHUNK_CHARS) } });
+  return hostCall('action', { action: name, input: { $upload: id } });
+}
+/** A toast in the host (shown even when the Agent tab, where messages are listed, is closed). */
+export const notify = (message, level = 'info') => (hosted && port ? hostCall('notify', { message: String(message).slice(0, 4000), level }).catch(() => {}) : Promise.resolve());
 let statusChain = Promise.resolve(), reported = '';
 /** Serialized and de-duplicated; resolves once the host has recorded this frame's current status. */
 export function reportStatus() {
@@ -62,13 +73,13 @@ export function connectHost() {
   });
 }
 const contribution = {
-  entry: { label: 'Pencil', description: { zh: 'UI 设计', en: 'UI design' }, kind: 'workspace' },
-  panels: ['workspace', 'editor'], artifactTools: ['pencil_propose_changes'], toolViews: [], panelAlias: { prefix: 'pencil:', kind: 'editor', title: 'Pencil' },
+  entry: { label: 'OpenPencil', description: { zh: 'UI 设计', en: 'UI design' }, kind: 'workspace' },
+  panels: ['workspace', 'editor'], artifactTools: ['pencil_apply_changes'], toolViews: [], panelAlias: { prefix: 'pencil:', kind: 'editor', title: 'OpenPencil' },
 };
 const KINDS = ['controller', 'workspace', 'editor', 'tool'];
 async function flush() {
   await lifecycle.flush?.();
-  if (host.dirty || host.busy) throw new Error('Pencil edits are still syncing; try again');
+  if (host.dirty || host.busy) throw new Error('OpenPencil edits are still syncing; try again');
   await reportStatus();
   return { dirty: false, busy: false };
 }
@@ -92,7 +103,7 @@ async function handle(method, input) {
     case 'freeze':
       await flush();
       host.frozen = true; await lifecycle.freeze?.();
-      if (host.dirty || host.busy) { host.frozen = false; await lifecycle.restore?.(); throw new Error('Pencil changed while freezing'); }
+      if (host.dirty || host.busy) { host.frozen = false; await lifecycle.restore?.(); throw new Error('OpenPencil changed while freezing'); }
       return { mount: plain(host.mount), undoClearedOnReopen: true };
     case 'restore':
       if (!host.mount || input?.mount?.sessionId !== host.mount.sessionId) throw new Error('Snapshot scope mismatch');
