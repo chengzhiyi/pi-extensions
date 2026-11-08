@@ -9,9 +9,12 @@ import { pencilTools, reference, validateOps, ID } from '../contract/tools.js';
 import { conflicts } from './rebase.js';
 
 const ASSETS = new URL('./assets/', import.meta.url).href;
-const HUMAN_ONLY = new Set(['accept', 'reject', 'revert', 'save', 'open', 'import', 'create', 'rename', 'selection', 'sync', 'lock']);
+const HUMAN_ONLY = new Set(['accept', 'reject', 'revert', 'save', 'open', 'import', 'upload', 'create', 'rename', 'selection', 'sync', 'lock']);
 const MAX_FIG_BYTES = 32 * 1024 * 1024;
 const MAX_PROPOSALS = 20;
+// The host caps one frame action at 2 MB of JSON, so the frame sends bigger inputs (an imported file,
+// a large design's sync) as `upload` chunks, then the action with `{ $upload: id }` in their place.
+const MAX_UPLOAD_CHARS = Math.ceil(MAX_FIG_BYTES * 1.4) + 64 * 1024, MAX_UPLOAD_CHUNKS = 64, MAX_UPLOADS = 4, UPLOAD_TTL_MS = 5 * 60_000;
 // Shape of a stored design record (state key `design.<docId>`). Bump it with a step in migrate().
 export const DESIGN_SCHEMA = 1;
 const sha = (b) => createHash('sha256').update(b).digest('hex');
@@ -35,6 +38,38 @@ const id = (v, what) => (typeof v === 'string' && new RegExp(ID).test(v) ? v : f
 export const createRuntime = (ctx) => {
   let disposed = false;
   let queue = Promise.resolve();
+  const uploads = new Map(); // id → { owner, total, chunks, chars, at }
+
+  function receiveChunk(input, scope) {
+    const now = Date.now();
+    for (const [key, u] of uploads) if (now - u.at > UPLOAD_TTL_MS) uploads.delete(key);
+    const { id: uploadId, index, total, data } = input;
+    if (typeof uploadId !== 'string' || !/^[\w-]{8,64}$/.test(uploadId) || !Number.isInteger(total) || total < 1 || total > MAX_UPLOAD_CHUNKS
+      || !Number.isInteger(index) || index < 0 || index >= total || typeof data !== 'string') fail('Invalid upload chunk', 400, 'invalid_input');
+    let u = uploads.get(uploadId);
+    if (!u) {
+      if (uploads.size >= MAX_UPLOADS) fail('Too many uploads in progress', 429, 'busy');
+      u = { owner: scope?.sessionId, total, chunks: Array(total).fill(undefined), chars: 0, at: now }; uploads.set(uploadId, u);
+    }
+    if (u.owner !== scope?.sessionId || u.total !== total) fail('Upload does not match', 409, 'invalid_input');
+    if (u.chunks[index] === undefined) u.chars += data.length;
+    else u.chars += data.length - u.chunks[index].length;
+    if (u.chars > MAX_UPLOAD_CHARS) { uploads.delete(uploadId); fail(`Upload is larger than ${MAX_FIG_BYTES / 1024 / 1024} MB`, 413, 'too_large'); }
+    u.chunks[index] = data; u.at = now;
+    return { received: u.chunks.filter((c) => c !== undefined).length, total };
+  }
+  /** An action's input sent as chunks: `{ $upload: id }` → the parsed JSON, once every chunk arrived. */
+  function uploaded(input, scope) {
+    if (typeof input?.$upload !== 'string') return input;
+    const u = uploads.get(input.$upload);
+    uploads.delete(input.$upload);
+    if (!u || u.owner !== scope?.sessionId) fail('Upload expired or unknown; try again', 410, 'upload_missing');
+    if (u.chunks.some((c) => c === undefined)) fail('Upload incomplete; try again', 400, 'upload_missing');
+    let value;
+    try { value = JSON.parse(u.chunks.join('')); } catch { fail('Upload is not valid JSON', 400, 'invalid_input'); }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) fail('Invalid input', 400, 'invalid_input');
+    return value;
+  }
   const broker = ctx.broker;
   const ws = { scope: 'workspace' };
 
@@ -301,13 +336,15 @@ export const createRuntime = (ctx) => {
         if (request.generation !== ctx.generation || !request.scope?.sessionId) fail('Stale generation or invalid scope', 409);
         if (!request.input || typeof request.input !== 'object' || Array.isArray(request.input)) fail('Invalid input', 400);
         if (request.kind === 'tool' && HUMAN_ONLY.has(request.action)) fail('This action is reserved for the human', 403, 'human_only');
+        if (request.kind === 'action' && request.action === 'upload') return receiveChunk(request.input, request.scope);
+        if (request.kind === 'action') request = { ...request, input: uploaded(request.input, request.scope) };
         await initEngine(ASSETS);
         return request.kind === 'tool' ? tool(request.action, request.input, request.scope) : action(request.action, request.input, request.scope);
       });
       queue = run;
       return run;
     },
-    async dispose() { disposed = true; await queue.catch(() => {}); },
+    async dispose() { disposed = true; uploads.clear(); await queue.catch(() => {}); },
   };
 };
 

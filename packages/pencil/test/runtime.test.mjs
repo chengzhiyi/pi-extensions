@@ -163,7 +163,7 @@ test('packaged backend: apply → inspect → undo → save .fig → reopen; hum
   await rt.dispose();
 });
 
-test('packaged backend: open workspace .fig (reuse), import .fig/.pen/.drawio, refuse bad files, migrate records', async (t) => {
+test('packaged backend: open workspace .fig (reuse), import .fig/.pen/.drawio, chunked uploads, refuse bad files, migrate records', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'pencil-import-')); t.after(() => rm(dir, { recursive: true, force: true }));
   const pkgRoot = join(dir, 'package'), cwd = join(dir, 'workspace');
   await mkdir(cwd, { recursive: true });
@@ -220,6 +220,20 @@ test('packaged backend: open workspace .fig (reuse), import .fig/.pen/.drawio, r
   await assert.rejects(call('action', 'import', { name: 'photo.png', data: 'AA==' }), (e) => e.reason === 'unsupported_format' && /\.pen/.test(e.message));
   await assert.rejects(call('action', 'import', { name: 'broken.pen', data: Buffer.from('{"nope":1}').toString('base64') }), (e) => e.reason === 'invalid_file');
   await assert.rejects(call('action', 'import', { name: 'empty.fig', data: '' }), (e) => e.reason === 'too_large');
+
+  // Inputs over the host's 2 MB action limit arrive as upload chunks, then the action names the upload.
+  const big = JSON.stringify({ name: 'Big card.pen', data: Buffer.from(JSON.stringify(pen) + ' '.repeat(3 * 1024 * 1024)).toString('base64') });
+  const size = 512 * 1024, total = Math.ceil(big.length / size), uploadId = 'up-0000-big';
+  for (let index = total - 1; index >= 0; index--) await call('action', 'upload', { id: uploadId, index, total, data: big.slice(index * size, (index + 1) * size) });
+  const chunked = await call('action', 'import', { $upload: uploadId });
+  assert.equal(chunked.title, 'Big card');
+  await assert.rejects(call('action', 'import', { $upload: uploadId }), (e) => e.reason === 'upload_missing', 'an upload is used once');
+  await call('action', 'upload', { id: 'up-0000-part', index: 0, total: 2, data: '{"name":' });
+  await assert.rejects(call('action', 'import', { $upload: 'up-0000-part' }), (e) => e.reason === 'upload_missing', 'an incomplete upload is refused');
+  await call('action', 'upload', { id: 'up-0000-other', index: 0, total: 1, data: '{}' });
+  await assert.rejects(rt.invoke({ requestId: 'x1', generation: 1, scope: { cwd, workspaceId: 'w', sessionId: 'someone-else' }, kind: 'action', action: 'import', input: { $upload: 'up-0000-other' } }), (e) => e.reason === 'upload_missing', 'only the uploading session can use it');
+  await assert.rejects(call('action', 'upload', { id: 'up-0000-many', index: 0, total: 65, data: 'x' }), (e) => e.reason === 'invalid_input');
+  await assert.rejects(call('tool', 'upload', { id: 'up-0000-tool', index: 0, total: 1, data: '{}' }), (e) => e.reason === 'human_only');
 
   // Stored records: an early schema-1 record without newer fields still loads; a newer schema is refused, not rewritten.
   const raw = await broker.call('state.read', { key: `design.${made.docId}`, scope: 'workspace' });

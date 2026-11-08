@@ -16,12 +16,12 @@ import LeftPanel from './editor/LeftPanel.vue';
 import RightPanel from './editor/RightPanel.vue';
 import Toolbar from './editor/Toolbar.vue';
 import PlayLayer from './editor/PlayLayer.vue';
-import OpenDialog from './editor/OpenDialog.vue';
 import { appearance } from './editor/appearance.js';
 import { t } from './editor/l10n.js';
 import { Layers, PanelRight, Sparkles, Undo2, X } from 'lucide-vue-next';
+import { formatShortcut } from '@open-pencil/vue/editor/commands';
 import { buildLoginScreen, layoutSnapshot, loadFixtureFonts } from '../adapter/fixture.js';
-import { hosted, host, mounted, lifecycle, action, hostCall, reportStatus } from './host.js';
+import { hosted, host, mounted, lifecycle, action, hostCall, notify, reportStatus } from './host.js';
 import { loadFig, exportFig, toB64, isImportable, IMPORT_ACCEPT, MAX_IMPORT_BYTES } from './doc.js';
 
 const canvasHost = ref(null);
@@ -169,7 +169,7 @@ async function run(label, fn) {
   if (host.frozen) { ui.message = t('OpenPencil 正在更新，请稍后再试。', 'OpenPencil is updating; try again in a moment.'); return; }
   ui.working = true; ui.message = ''; ui.conflicts = [];
   try { await flush(); await fn(); }
-  catch (e) { ui.message = `${label} failed: ${e.message}`; ui.conflicts = e.conflicts ?? []; }
+  catch (e) { ui.message = `${label} failed: ${e.message}`; ui.conflicts = e.conflicts ?? []; void notify(ui.message, 'error'); }
   finally { ui.working = false; }
 }
 const decide = (proposal, verdict) => run(verdict === 'accept' ? 'Accept' : 'Reject', async () => {
@@ -211,36 +211,37 @@ const newDesign = () => run('New design', async () => {
 });
 const switchDesign = (docId) => docId !== ui.docId && run('Open', async () => { await openDoc(docId); await refreshDocs(); ui.status = 'ready'; });
 const renameDesign = (title) => run('Rename', async () => { const r = await action('rename', { docId: ui.docId, title }); ui.title = r.title; await refreshDocs(); });
-// ---------- open / import ----------
-// Open: a .fig already in the workspace (bound to that path, so Save writes it back). Import: a
-// document from the person's computer (.fig, .jam, .pen, .drawio) becomes a new design that
-// Save writes under designs/. Place image: PNG/JPG/WebP/GIF/SVG onto the current page.
-const openDialog = reactive({ open: false, error: '' });
+// ---------- open ----------
+// File → Open… (⌘O) or dropping a file onto the editor: a Figma, FigJam, Pencil or draw.io file from
+// the person's computer becomes a new design on the canvas; Save writes it as a .fig under designs/.
+// Place image: PNG/JPG/WebP/GIF/SVG onto the current page.
 const fileInput = ref(null), imageInput = ref(null), dropping = ref(false);
-const pickDocument = () => fileInput.value?.click();
+const pickDocument = () => { if (!ui.working && !host.frozen) fileInput.value?.click(); };
 const pickImage = () => imageInput.value?.click();
-const openWorkspaceFile = (path) => run(t('打开', 'Open'), async () => {
-  openDialog.error = '';
-  try {
-    const r = await action('open', { path });
-    openDialog.open = false;
-    await openDoc(r.docId); await refreshDocs(); ui.status = 'ready';
-    ui.message = r.reused ? t(`“${path}”已经打开`, `${path} is already open`) : t(`已打开 ${path}`, `Opened ${path}`);
-  } catch (e) { openDialog.error = e.message; throw e; }
-});
+// ⌘O / Ctrl+O, as in OpenPencil (the key press is the user gesture the file picker needs).
+function onOpenKey(e) {
+  if (!hosted || e.code !== 'KeyO' || !(/Mac|iPhone|iPad/.test(navigator.platform) ? e.metaKey : e.ctrlKey) || e.shiftKey || e.altKey) return;
+  if (playing.value || editor.state.editingTextId) return;
+  e.preventDefault(); pickDocument();
+}
 async function importFile(file) {
-  if (!isImportable(file)) throw new Error(t(`不支持的文件类型：${file.name}（可导入 ${IMPORT_ACCEPT}）`, `${file.name} is not a supported file (import ${IMPORT_ACCEPT})`));
+  if (!isImportable(file)) throw new Error(t(`不支持的文件类型：${file.name}（可打开 ${IMPORT_ACCEPT}）`, `${file.name} is not a supported file (open ${IMPORT_ACCEPT})`));
   if (file.size > MAX_IMPORT_BYTES) throw new Error(t(`${file.name} 超过 32 MB`, `${file.name} is larger than 32 MB`));
-  const r = await action('import', { name: file.name, data: toB64(new Uint8Array(await file.arrayBuffer())) });
+  const r = await action('import', { name: file.name, data: toB64(new Uint8Array(await file.arrayBuffer())) }).catch((e) => {
+    // A pi-webapp from before Open existed has not reviewed these actions: say what to do instead of a 403.
+    if (e?.code === 'action_denied' || e?.errorCode === 'action_denied' || /not reviewed/i.test(e?.message ?? '')) throw new Error(t('当前 pi-webapp 版本还不支持打开文件，请更新 pi-webapp 后重试。', 'This pi-webapp version cannot open files yet; update pi-webapp and try again.'));
+    throw e;
+  });
   await openDoc(r.docId);
   return r;
 }
-const importFiles = (files) => run(t('导入', 'Import'), async () => {
+const importFiles = (files) => run(t('打开', 'Open'), async () => {
   const list = [...files]; if (!list.length) return;
   let last = null;
   for (const file of list) last = await importFile(file);
   await refreshDocs(); ui.status = 'ready';
-  ui.message = list.length === 1 ? t(`已导入“${last.title}”`, `Imported “${last.title}”`) : t(`已导入 ${list.length} 个文件`, `Imported ${list.length} files`);
+  ui.message = list.length === 1 ? t(`已打开“${last.title}”`, `Opened “${last.title}”`) : t(`已打开 ${list.length} 个文件`, `Opened ${list.length} files`);
+  void notify(ui.message);
 });
 function placeImages(files) {
   const list = [...files]; if (!list.length) return;
@@ -272,8 +273,7 @@ function onDrop(e) {
 
 const fileItems = computed(() => hosted ? [
   { label: t('新建设计', 'New design'), action: newDesign, disabled: ui.working },
-  { label: t('打开工作区文件…', 'Open workspace file…'), action: () => { openDialog.error = ''; openDialog.open = true; }, disabled: ui.working, testId: 'file-open' },
-  { label: t('从电脑导入…', 'Import from computer…'), action: pickDocument, disabled: ui.working, testId: 'file-import' },
+  { label: t('打开…', 'Open…'), shortcut: formatShortcut('MOD+O'), action: pickDocument, disabled: ui.working, testId: 'file-open' },
   { label: t('放置图片…', 'Place image…'), action: pickImage, disabled: ui.working || playing.value, testId: 'file-place-image' },
   { separator: true },
   { label: t('保存为 .fig', 'Save as .fig'), shortcut: '', action: save, disabled: ui.working || !ui.docId },
@@ -313,11 +313,12 @@ Object.assign(lifecycle, {
 });
 
 onMounted(() => {
+  addEventListener('keydown', onOpenKey);
   resizeObserver = new ResizeObserver(([entry]) => { shellWidth.value = entry.contentRect.width; });
   if (shellEl.value) resizeObserver.observe(shellEl.value);
   const wait = setInterval(() => { if (editor.renderer) { clearInterval(wait); chrome.value = true; void (hosted ? bootHosted().catch((e) => { p.errors.push(String(e?.stack ?? e)); ui.status = `error: ${e?.reason ?? e?.code ?? ''} ${e?.message ?? e}`; }) : seedFixture()); } }, 16);
 });
-onUnmounted(() => { resizeObserver?.disconnect(); stopIo(); offEvents?.(); });
+onUnmounted(() => { removeEventListener('keydown', onOpenKey); resizeObserver?.disconnect(); stopIo(); offEvents?.(); });
 </script>
 
 <template>
@@ -346,12 +347,11 @@ onUnmounted(() => { resizeObserver?.disconnect(); stopIo(); offEvents?.(); });
         <button type="button" class="icon-btn" :aria-label="t('关闭', 'Dismiss')" @click="ui.toast = null"><X /></button>
       </div>
       <Toolbar v-if="chrome && !playing" />
-      <div v-if="dropping" class="op-drop-hint">{{ t('松开以导入为新设计', 'Drop to import as a new design') }}</div>
+      <div v-if="dropping" class="op-drop-hint">{{ t('松开以打开文件', 'Drop to open the file') }}</div>
     </main>
     <template v-if="hosted">
       <input ref="fileInput" type="file" hidden multiple :accept="IMPORT_ACCEPT" data-testid="import-input" @change="onPicked($event, importFiles)" />
       <input ref="imageInput" type="file" hidden multiple accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml,.svg" data-testid="image-input" @change="onPicked($event, placeImages)" />
-      <OpenDialog v-model:open="openDialog.open" :working="ui.working" :error="openDialog.error" @submit="openWorkspaceFile" />
     </template>
     <RightPanel v-if="chrome" v-show="!playing" :ui="ui" :hosted="hosted" :can-open-tab="host.mount?.kind === 'workspace'"
       @decide="decide" @lock="lock" @scope="scope" @unscope="unscope" @save="save" @open-tab="openTab" @undo="undoAgent" @present="editor.startPlay()" />

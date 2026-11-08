@@ -37,11 +37,17 @@ const agent = async (action, input) => { const r = await invoke('tool', action, 
 
 // ---- HTTP: frame assets with the per-plugin CSP; parent page; /rpc for frame actions ----
 const actionsSeen = [];
+// Keep in step with pi-webapp's src/host/server/plugins/hosted/plugin-policies.ts (PENCIL.actions).
+const REVIEWED_ACTIONS = ['list', 'get', 'accept', 'reject', 'revert', 'save', 'open', 'import', 'upload', 'create', 'rename', 'selection', 'sync', 'lock'];
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1');
   if (url.pathname === '/rpc' && req.method === 'POST') {
     let body = ''; for await (const c of req) body += c;
+    // pi-webapp refuses a plugin action over 2 MB of JSON (bridge.ts readJson limit).
+    if (Buffer.byteLength(body) > 2 * 1024 * 1024) { res.end(JSON.stringify({ ok: false, error: { code: 'payload_too_large', message: '插件请求内容无效或过大' } })); return; }
     const { action, input } = JSON.parse(body); actionsSeen.push(action);
+    // pi-webapp only runs frame actions it has reviewed for this plugin (plugin-policies.ts PENCIL.actions).
+    if (!REVIEWED_ACTIONS.includes(action)) { res.end(JSON.stringify({ ok: false, error: { code: 'action_denied', message: 'Action is not reviewed by this host' } })); return; }
     try { res.end(JSON.stringify({ ok: true, value: await invoke('action', action, input) })); }
     catch (e) { res.end(JSON.stringify({ ok: false, error: { code: e.code ?? 'error', message: e.message, status: e.status, reason: e.reason, conflicts: e.conflicts } })); }
     return;
@@ -252,35 +258,37 @@ try {
   assert.equal(await frame.evaluate(() => globalThis.__pencil.ui.rev) >= before, true);
   step('agent-built switch runs live in Preview (click turns it on, Reset turns it off) in the host theme; Esc leaves', { ...preview, afterClick: 'true' });
 
-  // File → Import from computer (.pen), drop a .fig onto the editor, then File → Open workspace file
-  // on the saved design: each import is a new design; opening a file that is already open switches to it.
+  // File → Open… with a real click: the browser's file chooser opens; the picked file (a .pen over
+  // the host's 2 MB action limit, so it travels in chunks) becomes a new design on the canvas.
+  // Then a .fig dropped onto the editor opens the same way, and a bad file shows a host toast.
   const originalDoc = await frame.evaluate(() => globalThis.__pencil.ui.docId);
   const docCount = async () => (await ui()).docs.length;
   const before0 = await docCount();
   const fileMenu = () => frame.click('.op-menubar-trigger >> nth=0');
-  await fileMenu(); await frame.click('[data-testid="file-import"]');
+  await fileMenu();
+  const [chooser] = await Promise.all([page.waitForEvent('filechooser'), frame.click('[data-testid="file-open"]')]);
   const pen = { version: '2.6', children: [{ type: 'frame', id: 'card', name: 'Imported card', x: 0, y: 0, width: 240, height: 120, fill: '#0EA5E9' }] };
-  await frame.setInputFiles('[data-testid="import-input"]', { name: 'Card.pen', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(pen)) });
-  const imported = await until((u) => /Imported “Card”/.test(u.message ?? ''), 'import .pen');
+  const bigPen = Buffer.from(JSON.stringify(pen) + ' '.repeat(3 * 1024 * 1024));
+  await chooser.setFiles({ name: 'Card.pen', mimeType: 'application/json', buffer: bigPen });
+  const imported = await until((u) => /Opened “Card”/.test(u.message ?? ''), 'open .pen', 40_000);
   assert.notEqual(imported.docId, originalDoc);
   assert.equal(await docCount(), before0 + 1);
-  assert.equal(await human(() => [...globalThis.__pencil.editor.graph.getAllNodes()].some((n) => n.name === 'Imported card')), true, 'the imported design is on the canvas');
+  assert.equal(await human(() => [...globalThis.__pencil.editor.graph.getAllNodes()].some((n) => n.name === 'Imported card')), true, 'the opened file is on the canvas');
+  assert.ok(actionsSeen.filter((a) => a === 'upload').length >= 6, 'a file over 2 MB is sent in chunks');
   await frame.evaluate(async (b64) => {
     const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
     const dt = new DataTransfer(); dt.items.add(new File([bytes], 'Dropped.fig'));
     const target = document.querySelector('[data-testid="left-panel"]');
     for (const type of ['dragenter', 'dragover', 'drop']) target.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt }));
   }, onDisk.toString('base64'));
-  await until((u) => /Imported “Dropped”/.test(u.message ?? ''), 'drop .fig');
+  await until((u) => /Opened “Dropped”/.test(u.message ?? ''), 'drop .fig');
   assert.equal(await docCount(), before0 + 2);
-  await fileMenu(); await frame.click('[data-testid="file-open"]');
-  await frame.fill('[data-testid="open-path"]', saveRec.path);
-  await frame.click('[data-testid="open-submit"]');
-  const reopenedUi = await until((u) => /already open/.test(u.message ?? ''), 'open workspace file');
-  assert.equal(reopenedUi.docId, originalDoc, 'opening the saved file switches back to its design');
-  assert.equal(await docCount(), before0 + 2, 'no duplicate design');
-  await frame.waitForSelector('[data-testid="open-dialog"]', { state: 'detached' });
-  step('File → Import (.pen), drop a .fig, File → Open workspace file (switches to the open design)', { docs: await docCount() });
+  await frame.setInputFiles('[data-testid="import-input"]', { name: 'broken.pen', mimeType: 'application/json', buffer: Buffer.from('{"nope":1}') });
+  await until((u) => /Open failed/.test(u.message ?? ''), 'bad file');
+  const toasts = await page.evaluate(() => window.hostLog.filter(([m]) => m === 'notify').map(([, i]) => i));
+  assert.ok(toasts.some((n) => n.level === 'error' && /broken\.pen/.test(n.message)), 'a failed open shows a host toast');
+  assert.ok(toasts.some((n) => n.level === 'info' && /Card/.test(n.message)), 'a successful open is announced');
+  step('File → Open… (file chooser, 3 MB .pen in chunks), drop a .fig, bad file → host toast', { docs: await docCount(), uploads: actionsSeen.filter((a) => a === 'upload').length });
 
   issues.violations = await frame.evaluate(() => globalThis.__csp ?? []);
   const hostLog = await page.evaluate(() => window.hostLog.map(([m]) => m));
