@@ -2,6 +2,7 @@
 // Order matters: point Core at its emitted runtime assets before anything loads CanvasKit/fonts.
 import '@open-pencil/core/runtime-assets/install';
 import { fontManager, WEB_FONT_PROVIDER_IDS } from '@open-pencil/core/text';
+import interVariable from '@open-pencil/core/assets/InterVariable.ttf?url';
 import { createApp } from 'vue';
 import App from './App.vue';
 import './editor/theme.css';
@@ -23,6 +24,12 @@ fontManager.setHostFontLoader(async (family, style) => {
   return buffer ? buffer.slice(0) : null;
 });
 fontManager.setCJKFallbackFamily('Noto Sans SC');
+// Preview runs interactive layers as HTML (shadow DOM), which sees the document's fonts, not the
+// canvas renderer's: register the same files so live controls read like the canvas. Loaded on first use.
+for (const face of [
+  new FontFace('Inter', `url(${interVariable})`, { weight: '100 900' }),
+  ...[['Regular', '400'], ['Medium', '500'], ['Bold', '700']].map(([style, weight]) => new FontFace('Noto Sans SC', `url(${CJK[style]})`, { weight })),
+]) document.fonts.add(face);
 
 // Theme and language follow the host inside pi-webapp, else the system and browser.
 followAppearance();

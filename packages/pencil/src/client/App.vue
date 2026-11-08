@@ -1,7 +1,8 @@
 <script setup>
-// pi-pencil editor frame: OpenPencil's editing UI (menu bar, pages, layers, floating toolbar,
-// design panel) built from the headless SDK, plus the agent review tab. In the hosted frame the
-// backend is authoritative and this editor is a replica that syncs snapshots of human edits.
+// OpenPencil editor frame: OpenPencil's editing UI (menu bar, pages, layers, floating toolbar,
+// design panel) built from the headless SDK, plus the agent tab. In the hosted frame the backend is
+// authoritative and this editor is a replica that syncs snapshots of human edits. Agent changes
+// arrive as new revisions and show on the canvas at once, with an undo for the latest one.
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { createDefaultEditorState, createEditor } from '@open-pencil/core';
 import { FigmaAPI } from '@open-pencil/core/figma-api';
@@ -14,9 +15,10 @@ import CanvasInput from './CanvasInput.vue';
 import LeftPanel from './editor/LeftPanel.vue';
 import RightPanel from './editor/RightPanel.vue';
 import Toolbar from './editor/Toolbar.vue';
+import PlayLayer from './editor/PlayLayer.vue';
 import { appearance } from './editor/appearance.js';
 import { t } from './editor/l10n.js';
-import { Layers, PanelRight } from 'lucide-vue-next';
+import { Layers, PanelRight, Sparkles, Undo2, X } from 'lucide-vue-next';
 import { buildLoginScreen, layoutSnapshot, loadFixtureFonts } from '../adapter/fixture.js';
 import { hosted, host, mounted, lifecycle, action, hostCall, reportStatus } from './host.js';
 import { loadFig, exportFig } from './doc.js';
@@ -32,7 +34,9 @@ const editor = createEditor({
 provideEditor(editor);
 const p = globalThis.__pencil;
 p.editor = editor;
-const ui = reactive({ status: 'booting…', docId: null, title: '', rev: null, proposals: [], message: '', conflicts: [], docs: [], working: false });
+const ui = reactive({ status: 'booting…', docId: null, title: '', rev: null, proposals: [], changes: [], toast: null, message: '', conflicts: [], docs: [], working: false });
+// Preview runs on the canvas itself (OpenPencil's play view), so it shares the editor's theme.
+const playing = computed(() => editor.state.canvasView?.id === 'play');
 const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
 // Rulers follow the light/dark theme, as OpenPencil's app does (src/app/shell/theme.ts).
 function applyRulerTheme() {
@@ -51,6 +55,7 @@ const shellEl = ref(null), shellWidth = ref(1280), leftOpen = ref(false), rightO
 let resizeObserver = null;
 const layout = computed(() => {
   const w = shellWidth.value;
+  if (playing.value) return { left: 'closed', right: 'closed', vars: { '--left-w': '0px', '--right-w': '0px' } }; // the preview gets the whole pane
   if (w >= 1200) return { left: 'docked', right: 'docked', vars: { '--left-w': '240px', '--right-w': '300px' } };
   if (w >= 900) return { left: 'docked', right: 'docked', vars: { '--left-w': '208px', '--right-w': '264px' } };
   if (w >= 560) return { left: leftOpen.value ? 'drawer' : 'closed', right: 'docked', vars: { '--left-w': '0px', '--right-w': '240px' } };
@@ -87,22 +92,32 @@ function bindEdits(g) {
   offEvents?.();
   const mark = () => {
     if (suppress) return;
+    ui.toast = null; // the person edited after the agent: its change is no longer the one to undo
     host.dirty = true; reportStatus();
     clearTimeout(dirtyTimer); dirtyTimer = setTimeout(() => void flush(), 800);
   };
   offEvents = g.onNodeEvents({ created: mark, updated: mark, deleted: mark, reparented: mark, reordered: mark });
 }
-async function applyDoc(got) {
+async function applyDoc(got, { announce = false } = {}) {
   suppress++;
   try {
+    // A new revision made by the agent (seen while polling) is shown where it happened: its frames
+    // are selected and brought into view, and a toast offers to undo it.
+    const latest = got.changes?.[0];
+    const fresh = announce && latest && latest.rev === got.rev && latest.undoable && got.docId === ui.docId && got.rev > (ui.rev ?? 0);
     if (got.fig) {
       const g = await loadFig(got.fig);
       editor.replaceGraph(g); bindEdits(g);
-      editor.zoomToFit?.(); editor.requestRender?.();
+      const shown = fresh ? latest.nodeIds.filter((id) => g.getNode(id)) : [];
+      if (shown.length) { editor.select?.(shown); editor.zoomToSelection?.(); } else editor.zoomToFit?.();
+      editor.requestRender?.();
       await frames(); // let text measurement / derived layout settle before tracking edits
     }
     ui.docId = got.docId; ui.title = got.title ?? ui.title; ui.rev = got.rev;
     ui.proposals = (got.proposals ?? []).filter((x) => x.status === 'pending');
+    if (got.changes) ui.changes = got.changes;
+    if (fresh) ui.toast = { rev: latest.rev, title: latest.title };
+    else if (ui.toast && ui.toast.rev !== got.rev) ui.toast = null;
     host.dirty = false; reportStatus();
   } finally { suppress--; }
 }
@@ -138,15 +153,19 @@ async function poll() {
     if (!ui.docId) { // empty workspace: pick up the first design the agent proposes
       const docs = await action('list', {});
       ui.docs = docs;
-      if (docs.length && !ui.docId && !host.dirty) { await openDoc(docs.at(-1).docId); ui.status = 'ready'; }
+      if (docs.length && !ui.docId && !host.dirty) {
+        const got = await action('get', { docId: docs.at(-1).docId });
+        ui.docId = got.docId; // the agent's first design is announced like any later change
+        await applyDoc(got, { announce: true }); ui.status = 'ready';
+      }
       return;
     }
     const got = await action('get', { docId: ui.docId, sinceRev: ui.rev });
-    if (got.unchanged) ui.proposals = got.proposals.filter((x) => x.status === 'pending'); else await applyDoc(got);
+    if (got.unchanged) ui.proposals = got.proposals.filter((x) => x.status === 'pending'); else await applyDoc(got, { announce: true });
   } catch (e) { ui.message = `Refresh failed: ${e.message}`; }
 }
 async function run(label, fn) {
-  if (host.frozen) { ui.message = 'Pencil is updating; try again in a moment.'; return; }
+  if (host.frozen) { ui.message = t('OpenPencil 正在更新，请稍后再试。', 'OpenPencil is updating; try again in a moment.'); return; }
   ui.working = true; ui.message = ''; ui.conflicts = [];
   try { await flush(); await fn(); }
   catch (e) { ui.message = `${label} failed: ${e.message}`; ui.conflicts = e.conflicts ?? []; }
@@ -156,6 +175,13 @@ const decide = (proposal, verdict) => run(verdict === 'accept' ? 'Accept' : 'Rej
   const r = await action(verdict, { docId: ui.docId, proposalId: proposal.id });
   ui.message = verdict === 'accept' ? `Applied “${proposal.title}” as rev ${r.rev}${r.rebased ? ' (rebased onto your edits)' : ''}` : `Rejected “${proposal.title}”`;
   await openDoc(ui.docId);
+});
+// Undo the agent's latest change (only while nothing happened after it; the backend checks).
+const undoAgent = () => run(t('撤销', 'Undo'), async () => {
+  const r = await action('revert', { docId: ui.docId, rev: ui.rev });
+  ui.toast = null;
+  await openDoc(ui.docId);
+  ui.message = t(`已撤销 Agent 的修改“${r.title}”`, `Undid the agent's change “${r.title}”`);
 });
 const selected = () => [...(editor.state.selectedIds ?? [])];
 const lock = (locked) => run(locked ? 'Lock' : 'Unlock', async () => {
@@ -169,8 +195,12 @@ const scope = () => run('Scope', async () => {
   await action('selection', { docId: ui.docId, nodeIds: ids, task: true });
   ui.message = `The agent may now change only the ${ids.length} selected layer(s) and their contents`;
 });
+const unscope = () => run('Scope', async () => {
+  await action('selection', { docId: ui.docId, nodeIds: selected(), clearTask: true });
+  ui.message = t('Agent 可以再次修改整个设计', 'The agent may change the whole design again');
+});
 // Workspace → its own editor tab (panel alias `pencil:<docId>`), opened by the host workbench.
-const openTab = () => run('Open', () => hostCall('openPanel', { kind: 'editor', contentId: ui.docId, title: ui.title || 'Pencil' }));
+const openTab = () => run('Open', () => hostCall('openPanel', { kind: 'editor', contentId: ui.docId, title: ui.title || 'OpenPencil' }));
 const save = () => run('Save', async () => { const r = await action('save', { docId: ui.docId }); ui.message = `Saved ${r.path} (${Math.round(r.bytes / 1024)} KB)`; });
 const refreshDocs = async () => { ui.docs = await action('list', {}); };
 const newDesign = () => run('New design', async () => {
@@ -228,26 +258,33 @@ onUnmounted(() => { resizeObserver?.disconnect(); stopIo(); offEvents?.(); });
 </script>
 
 <template>
-  <div ref="shellEl" class="shell op-shell" :class="{ hosted }" :style="layout.vars" :data-left="layout.left" :data-right="layout.right" :inert="host.frozen" :data-frozen="host.frozen || undefined">
-    <LeftPanel v-if="chrome" :ui="ui" :hosted="hosted" :file-items="fileItems" @new="newDesign" @switch="switchDesign" @rename="renameDesign" />
+  <div ref="shellEl" class="shell op-shell" :class="{ hosted }" :style="layout.vars" :data-left="layout.left" :data-right="layout.right" :inert="host.frozen" :data-frozen="host.frozen || undefined" :data-playing="playing || undefined">
+    <LeftPanel v-if="chrome" v-show="!playing" :ui="ui" :hosted="hosted" :file-items="fileItems" @new="newDesign" @switch="switchDesign" @rename="renameDesign" />
     <main class="op-center">
       <div ref="canvasHost" class="canvas">
-        <CanvasRoot show-rulers>
+        <CanvasRoot :show-rulers="!playing">
           <CanvasSurface style="width: 100%; height: 100%" />
           <CanvasInput />
+          <PlayLayer v-if="chrome" />
         </CanvasRoot>
       </div>
       <span data-testid="status" style="position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0)">{{ ui.status }}</span>
       <div v-if="showStatus" class="op-status" :data-error="/^error/.test(ui.status) || undefined">{{ ui.status }}</div>
-      <div v-if="layout.left !== 'docked'" class="op-panel-toggles left">
+      <div v-if="layout.left !== 'docked' && !playing" class="op-panel-toggles left">
         <button type="button" class="icon-btn" data-testid="toggle-left" :data-active="leftOpen || undefined" :title="t('页面与图层', 'Pages and layers')" @click="leftOpen = !leftOpen"><Layers /></button>
       </div>
-      <div v-if="layout.right !== 'docked'" class="op-panel-toggles right">
+      <div v-if="layout.right !== 'docked' && !playing" class="op-panel-toggles right">
         <button type="button" class="icon-btn" data-testid="toggle-right" :data-active="rightOpen || undefined" :title="t('设计面板', 'Design panel')" @click="rightOpen = !rightOpen"><PanelRight /></button>
       </div>
-      <Toolbar v-if="chrome" />
+      <div v-if="ui.toast && !playing" class="op-agent-toast" role="status" data-testid="agent-toast">
+        <Sparkles />
+        <span class="truncate">{{ t('Agent 已修改：', 'Agent changed: ') }}<b>{{ ui.toast.title }}</b></span>
+        <button type="button" class="btn" data-testid="agent-undo" :disabled="ui.working" @click="undoAgent"><Undo2 />{{ t('撤销', 'Undo') }}</button>
+        <button type="button" class="icon-btn" :aria-label="t('关闭', 'Dismiss')" @click="ui.toast = null"><X /></button>
+      </div>
+      <Toolbar v-if="chrome && !playing" />
     </main>
-    <RightPanel v-if="chrome" :ui="ui" :hosted="hosted" :can-open-tab="host.mount?.kind === 'workspace'"
-      @decide="decide" @lock="lock" @scope="scope" @save="save" @open-tab="openTab" />
+    <RightPanel v-if="chrome" v-show="!playing" :ui="ui" :hosted="hosted" :can-open-tab="host.mount?.kind === 'workspace'"
+      @decide="decide" @lock="lock" @scope="scope" @unscope="unscope" @save="save" @open-tab="openTab" @undo="undoAgent" @present="editor.startPlay()" />
   </div>
 </template>

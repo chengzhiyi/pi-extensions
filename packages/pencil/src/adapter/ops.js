@@ -1,5 +1,6 @@
 // PencilOp → typed Figma Plugin API calls. No eval, no JSX render. Validation of shapes happens in
 // contract/ops.js; this module enforces graph rules (existence, locks) and applies.
+import { OpenPencilAPI } from '@open-pencil/core/openpencil-api';
 import { CJK_FAMILY } from './engine.js';
 
 const rgb = (hex) => ({ r: parseInt(hex.slice(1, 3), 16) / 255, g: parseInt(hex.slice(3, 5), 16) / 255, b: parseInt(hex.slice(5, 7), 16) / 255 });
@@ -49,17 +50,41 @@ export async function applyOps(figma, graph, ops, { scope = null, pageId } = {})
       let parent = op.parent === '$page' ? (pageId ?? figma.currentPageId) : resolve(op.parent, i);
       if (op.parent !== '$page') guardWrite(parent, i);
       else if (scope) throw new OpError(`op ${i}: creating on the page is outside the task scope`, 403, 'out_of_scope', i);
-      const node = op.type === 'TEXT' ? figma.createText() : op.type === 'RECTANGLE' ? figma.createRectangle() : op.type === 'ELLIPSE' ? figma.createEllipse() : figma.createFrame();
+      let node;
+      if (op.type === 'INSTANCE') {
+        // An instance of a component, or of a variant set's default variant (its first variant).
+        const source = graph.getNode(resolve(op.component, i));
+        const main = source.type === 'COMPONENT_SET' ? graph.getNode(source.childIds?.[0]) : source;
+        if (main?.type !== 'COMPONENT') throw new OpError(`op ${i}: component must be a COMPONENT or a variant set`, 400, 'invalid_op', i);
+        node = figma.getNodeById(main.id).createInstance();
+      } else node = op.type === 'TEXT' ? figma.createText() : op.type === 'RECTANGLE' ? figma.createRectangle() : op.type === 'ELLIPSE' ? figma.createEllipse() : op.type === 'COMPONENT' ? figma.createComponent() : figma.createFrame();
       if (op.type === 'TEXT') node.fontName = { family: CJK_FAMILY, style: 'Regular' };
       const parentProxy = figma.getNodeById(parent);
       if (op.index === undefined) parentProxy.appendChild(node); else parentProxy.insertChild(op.index, node);
-      if (op.type === 'FRAME' && !op.props?.fill) node.fills = [];
+      if ((op.type === 'FRAME' || op.type === 'COMPONENT') && !op.props?.fill) node.fills = [];
       refs.set(op.ref, node.id); touched.add(node.id);
       if (op.parent === '$page') roots.push(node.id);
       setProps(node, op.props ?? {}, op.type);
+      interactive(op.props ?? {}, node.id, i);
+    } else if (op.op === 'variants') {
+      // Components named like "State=Off" / "State=On" become one variant set; its variant property
+      // ("State") is what a toggle, switch or checkbox behaviour binds its value to.
+      const ids = op.ids.map((ref) => resolve(ref, i));
+      for (const id of ids) { guardWrite(id, i); if (graph.getNode(id).type !== 'COMPONENT') throw new OpError(`op ${i}: variants combines COMPONENT nodes only`, 400, 'invalid_op', i); }
+      const parent = op.parent === '$page' ? (pageId ?? figma.currentPageId) : resolve(op.parent, i);
+      if (op.parent !== '$page') guardWrite(parent, i);
+      else if (scope) throw new OpError(`op ${i}: creating on the page is outside the task scope`, 403, 'out_of_scope', i);
+      let set;
+      try { set = figma.combineAsVariants(ids.map((id) => figma.getNodeById(id)), figma.getNodeById(parent)); }
+      catch (error) { throw new OpError(`op ${i}: ${error.message}`, 400, 'invalid_op', i); }
+      refs.set(op.ref, set.id); touched.add(set.id);
+      if (op.parent === '$page') roots.push(set.id);
+      setProps(set, op.props ?? {}, 'COMPONENT_SET');
+      interactive(op.props ?? {}, set.id, i);
     } else if (op.op === 'update') {
       const id = resolve(op.id, i); guardWrite(id, i);
       setProps(figma.getNodeById(id), op.props ?? {}, graph.getNode(id).type); touched.add(id);
+      interactive(op.props ?? {}, id, i);
     } else if (op.op === 'delete') {
       const id = resolve(op.id, i); guardWrite(id, i);
       const below = lockedBelow(graph, id);
@@ -68,6 +93,44 @@ export async function applyOps(figma, graph, ops, { scope = null, pageId } = {})
     } else throw new OpError(`op ${i}: unsupported op ${op.op}`);
   }
   return { refs: Object.fromEntries(refs), touched: [...touched], roots };
+
+  /** Component properties, layer bindings and behaviours: what makes a component a live control in preview. */
+  function interactive(p, id, i) {
+    const node = graph.getNode(id);
+    const fail = (message, reason = 'invalid_op') => { throw new OpError(`op ${i}: ${message}`, 400, reason, i); };
+    if (p.properties) {
+      if (node.type !== 'COMPONENT' && node.type !== 'COMPONENT_SET') fail('properties can only be added to a COMPONENT or a variant set');
+      for (const def of p.properties) {
+        try { figma.getNodeById(id).addComponentProperty(def.name, def.type, def.type === 'BOOLEAN' ? def.default === true || def.default === 'true' : String(def.default ?? '')); }
+        catch (error) { fail(error.message); }
+      }
+    }
+    if (p.bind) {
+      // The nearest component (or variant set) above that defines the property owns the binding.
+      const field = { text: 'TEXT', visible: 'VISIBLE' };
+      for (const [key, name] of Object.entries(p.bind)) {
+        if (key === 'text' && node.type !== 'TEXT') fail('bind.text needs a TEXT layer');
+        let definition = null;
+        for (let n = node.parentId ? graph.getNode(node.parentId) : null; n && !definition; n = n.parentId ? graph.getNode(n.parentId) : null)
+          if (n.type === 'COMPONENT' || n.type === 'COMPONENT_SET') definition = (n.componentPropertyDefinitions ?? []).find((d) => d.name === name && d.type === (key === 'text' ? 'TEXT' : 'BOOLEAN'));
+        if (!definition) fail(`no ${key === 'text' ? 'TEXT' : 'BOOLEAN'} property "${name}" on a component above this layer`);
+        const kept = (node.componentPropertyReferences ?? []).filter((ref) => ref.field !== field[key]);
+        graph.updateNode(id, { componentPropertyReferences: [...kept, { field: field[key], propertyId: definition.id }] });
+      }
+    }
+    if (p.behaviour) {
+      if (node.type !== 'COMPONENT' && node.type !== 'COMPONENT_SET') fail('behaviour can only be set on a COMPONENT or a variant set');
+      if (node.type === 'COMPONENT' && graph.getNode(node.parentId)?.type === 'COMPONENT_SET') fail('set the behaviour on the variant set, not on one variant');
+      const { kind, values, states, parts } = p.behaviour;
+      let handle;
+      try {
+        handle = new OpenPencilAPI(figma).setBehaviour(id, { kind, ...(values ? { values } : {}), ...(states ? { states } : {}) });
+        for (const [part, ref] of Object.entries(parts ?? {})) handle.bindPart(part, resolve(ref, i));
+      } catch (error) { if (error instanceof OpError) throw error; fail(`behaviour: ${error.message}`); }
+      // A behaviour with an unbound required value renders but does nothing: refuse it with what is missing.
+      if (handle.missing.length) fail(`behaviour "${kind}" still needs: ${handle.missing.join(', ')}`, 'behaviour_incomplete');
+    }
+  }
 }
 
 function setProps(node, p, type) {

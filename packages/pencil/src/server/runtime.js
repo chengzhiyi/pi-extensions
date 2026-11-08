@@ -1,14 +1,15 @@
-// pi-pencil backend runtime (spike). Authoritative design documents live here (headless
-// open-pencil core in the host's Node child process). Agent writes are proposals; only human
-// frame actions (kind:"action") accept, reject or save.
+// OpenPencil backend runtime. Authoritative design documents live here (headless open-pencil
+// core in the host's Node child process). Agent writes apply directly as new revisions; only the
+// person's frame actions (kind:"action") revert, save, sync or lock. Proposals stored by older
+// builds can still be accepted or rejected.
 import { randomUUID, createHash } from 'node:crypto';
 import { initEngine, figmaFor, newGraph, readFig, writeFig, layout, renderPng, project } from '../adapter/engine.js';
 import { applyOps, OpError } from '../adapter/ops.js';
 import { pencilTools, reference, validateOps, ID } from '../contract/tools.js';
-import { preconditions, conflicts } from './rebase.js';
+import { conflicts } from './rebase.js';
 
 const ASSETS = new URL('./assets/', import.meta.url).href;
-const HUMAN_ONLY = new Set(['accept', 'reject', 'save', 'open', 'create', 'rename', 'selection', 'sync', 'lock']);
+const HUMAN_ONLY = new Set(['accept', 'reject', 'revert', 'save', 'open', 'create', 'rename', 'selection', 'sync', 'lock']);
 const MAX_FIG_BYTES = 32 * 1024 * 1024;
 const MAX_PROPOSALS = 20;
 const sha = (b) => createHash('sha256').update(b).digest('hex');
@@ -75,8 +76,7 @@ export const createRuntime = (ctx) => {
         const designs = [];
         for (const docId of docs.slice(0, 50)) {
           const v = (await readRecord(`design.${docId}`)).value; if (!v) continue;
-          designs.push({ docId, rev: v.rev, path: v.path, saved: v.savedRev === v.rev, untrusted: { title: v.title },
-            proposals: v.proposals.filter((p) => p.status === 'pending').map((p) => ({ id: p.id, baseRev: p.baseRev, ops: p.ops.length, untrusted: { title: p.title } })) });
+          designs.push({ docId, rev: v.rev, path: v.path, saved: v.savedRev === v.rev, untrusted: { title: v.title } });
         }
         const session = (await readRecord('session', {})).value;
         return { designs, selection: session?.selection ?? null };
@@ -89,17 +89,16 @@ export const createRuntime = (ctx) => {
       }
       case 'render': {
         const rec = await loadDesign(input.docId);
-        if (input.proposalId) {
-          const p = findProposal(rec.value, input.proposalId);
-          return result(JSON.stringify({ proposalId: p.id, status: p.status, images: p.preview.length }), p.preview);
-        }
         const graph = await graphOf(rec.value);
         const ids = input.nodeId ? [id(input.nodeId, 'nodeId')] : topFrames(graph).map((n) => n.id);
         if (!ids.length) return { message: 'Design is empty' };
         const images = await renderTargets(graph, ids, input.scale ?? 0.75);
         return result(JSON.stringify({ docId: rec.value.docId, rev: rec.value.rev, rendered: ids.slice(0, 4) }), images);
       }
-      case 'propose': {
+      case 'apply': {
+        // The agent edits the design directly: the batch is validated (locks, task scope, ids), applied
+        // and committed as a new revision that the editor shows on its canvas. The person can undo it
+        // there (action "revert"); there is no review step.
         const ops = validateOps(input.ops);
         const title = typeof input.title === 'string' && input.title.length <= 120 ? input.title : fail('title required', 400, 'invalid_input');
         let docId = input.docId, rec;
@@ -111,24 +110,25 @@ export const createRuntime = (ctx) => {
           await writeRecord('index', idx.rec, { docs: [...idx.docs, docId] });
         }
         const design = rec.value;
-        if (input.baseRev !== undefined && input.baseRev !== design.rev) fail(`Design is at rev ${design.rev}; inspect again and rebase`, 409, 'stale_base');
-        if (design.proposals.filter((p) => p.status === 'pending').length >= 5) fail('Too many pending proposals; wait for the human to decide', 429, 'too_many_pending');
-        // Apply to a fork to validate (locks/scope/existence) and to render the preview.
+        if (input.baseRev !== undefined && input.baseRev !== design.rev) fail(`Design is at rev ${design.rev} (the person edited it); inspect again and retry`, 409, 'stale_base');
         const graph = await graphOf(design);
         const figma = await figmaFor(graph);
         const session = (await readRecord('session', {})).value;
-        const pre = preconditions(graph, ops);
         let applied;
         try { applied = await applyOps(figma, graph, ops, { scope: session?.task?.docId === docId ? new Set(session.task.nodeIds) : null }); }
         catch (error) { if (error instanceof OpError) fail(error.message, error.status, error.reason); throw error; }
         layout(graph);
-        const previewIds = applied.roots.length ? applied.roots : topFrames(graph).filter((n) => applied.touched.some((t) => isWithin(graph, t, n.id))).map((n) => n.id);
-        const preview = await renderTargets(graph, previewIds);
-        const proposal = { id: randomUUID().slice(0, 8), title, baseRev: design.rev, ops, pre, status: 'pending', sessionId: scope.sessionId, createdAt: new Date().toISOString(), preview, touched: applied.touched.length };
-        design.proposals = [...design.proposals, proposal].slice(-MAX_PROPOSALS);
-        await writeRecord(`design.${docId}`, rec, design);
-        const text = JSON.stringify({ docId, proposalId: proposal.id, status: 'pending_review', baseRev: design.rev, createdNodes: Object.keys(applied.refs).length, message: 'Proposal created. Nothing is applied until the human accepts it in Pencil.' });
-        return result(text, preview);
+        // Show (select, zoom to, render) what the person should look at: new top-level layers, else the frames
+        // the change happened in. Source components the agent parks off to the side are only a fallback, so a
+        // new switch shows inside its screen rather than as its hidden variants.
+        const source = (nodeId) => ['COMPONENT', 'COMPONENT_SET'].includes(graph.getNode(nodeId)?.type);
+        const fresh = applied.roots.filter((nodeId) => graph.getNode(nodeId) && !source(nodeId));
+        const containing = topFrames(graph).filter((n) => !source(n.id) && applied.touched.some((t) => isWithin(graph, t, n.id))).map((n) => n.id);
+        const shownIds = fresh.length ? fresh : containing.length ? containing : applied.roots.filter((nodeId) => graph.getNode(nodeId));
+        const rev = await commitGraph(rec, design, graph, { kind: 'agent', title, ops: ops.length, nodeIds: shownIds.slice(0, 20), at: new Date().toISOString() });
+        const images = await renderTargets(graph, shownIds);
+        const text = JSON.stringify({ docId, rev, status: 'applied', createdNodes: Object.keys(applied.refs).length, nodes: applied.refs, message: 'Applied. The change is on the OpenPencil canvas now; the person can undo it there. Render it to check your work.' });
+        return result(text, images);
       }
       default: fail('Unknown tool action', 400);
     }
@@ -144,8 +144,9 @@ export const createRuntime = (ctx) => {
       }
       case 'get': {
         const rec = await loadDesign(input.docId); const v = rec.value;
-        if (input.sinceRev !== undefined && input.sinceRev === v.rev) return { docId: v.docId, rev: v.rev, unchanged: true, proposals: v.proposals.map(({ ops, pre, ...p }) => ({ ...p, opCount: ops.length })) };
-        return { docId: v.docId, title: v.title, rev: v.rev, path: v.path, savedRev: v.savedRev, fig: v.fig, proposals: v.proposals.map(({ ops, pre, ...p }) => ({ ...p, opCount: ops.length })) };
+        const proposals = v.proposals.map(({ ops, pre, ...p }) => ({ ...p, opCount: ops.length }));
+        if (input.sinceRev !== undefined && input.sinceRev === v.rev) return { docId: v.docId, rev: v.rev, unchanged: true, proposals };
+        return { docId: v.docId, title: v.title, rev: v.rev, path: v.path, savedRev: v.savedRev, fig: v.fig, proposals, changes: agentChanges(v) };
       }
       case 'accept': case 'reject': {
         const rec = await loadDesign(input.docId); const design = rec.value;
@@ -170,6 +171,18 @@ export const createRuntime = (ctx) => {
         p.status = 'accepted'; p.preview = []; p.rebased = rebased;
         const rev = await commitGraph(rec, design, graph, { kind: 'agent', proposalId: p.id });
         return { status: 'accepted', rev, rebased };
+      }
+      case 'revert': {
+        // Undo the agent's latest change: only while it is still the newest revision, so nothing the
+        // person did afterwards is lost. The undo is itself a new revision.
+        const rec = await loadDesign(input.docId); const design = rec.value;
+        const last = design.batches?.at(-1);
+        if (!last || last.kind !== 'agent' || last.appliedRev !== design.rev || last.reverted) fail('Only the latest change, made by the agent and not edited since, can be undone', 409, 'not_revertible');
+        if (input.rev !== undefined && input.rev !== design.rev) fail(`Design is at rev ${design.rev}`, 409, 'stale_base');
+        const graph = last.before ? await readFig(unb64(last.before)) : newGraph();
+        last.reverted = true;
+        const rev = await commitGraph(rec, design, graph, { kind: 'revert', title: last.title });
+        return { rev, title: last.title };
       }
       case 'save': {
         const rec = await loadDesign(input.docId); const design = rec.value;
@@ -236,8 +249,11 @@ export const createRuntime = (ctx) => {
       case 'selection': {
         const rec = await readRecord('session', {});
         const selection = { docId: id(input.docId, 'docId'), nodeIds: (Array.isArray(input.nodeIds) ? input.nodeIds : []).slice(0, 100).map((n) => id(n, 'nodeId')), at: new Date().toISOString() };
-        await writeRecord('session', rec, { ...(rec.value ?? {}), selection, ...(input.task ? { task: { docId: selection.docId, nodeIds: selection.nodeIds } } : {}) }, {});
-        return selection;
+        const { task: previous, ...rest } = rec.value ?? {};
+        // task: limit the agent to these layers; clearTask: give it the whole design again.
+        const task = input.task ? { docId: selection.docId, nodeIds: selection.nodeIds } : input.clearTask ? undefined : previous;
+        await writeRecord('session', rec, { ...rest, selection, ...(task ? { task } : {}) }, {});
+        return { ...selection, scoped: !!task && task.docId === selection.docId };
       }
       default: fail('Unknown action', 400);
     }
@@ -262,4 +278,10 @@ export const createRuntime = (ctx) => {
   };
 };
 
+/** The agent's recent changes (newest first) for the editor; `undoable` only for the newest revision. */
+function agentChanges(design) {
+  const batches = design.batches ?? [];
+  return batches.filter((b) => b.kind === 'agent').reverse().map((b) => ({ rev: b.appliedRev, title: b.title ?? '', ops: b.ops ?? 0, nodeIds: b.nodeIds ?? [], at: b.at ?? null, reverted: !!b.reverted,
+    undoable: !b.reverted && b === batches.at(-1) && b.appliedRev === design.rev }));
+}
 function isWithin(graph, id, ancestor) { for (let n = graph.getNode(id); n; n = n.parentId ? graph.getNode(n.parentId) : null) if (n.id === ancestor) return true; return false; }
