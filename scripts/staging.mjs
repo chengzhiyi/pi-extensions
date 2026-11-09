@@ -67,12 +67,16 @@ export function pendingStages(name, {
 }
 
 /**
- * For an explicit staging run: a name showing only npm's placeholder may be staged again once its
- * earlier stage was rejected. Anything still pending, or an unreadable queue, stops the run.
+ * For an explicit staging run on a name that shows only npm's placeholder. npm lets several versions
+ * of one package wait in Staged Packages, so an older pending stage does not block staging `version`;
+ * only a pending stage of that same version (npm would refuse it) or an unreadable queue stops the run.
  */
-export function restageAfterRejection(name, { list = pendingStages } = {}) {
+export function restageAfterRejection(name, { version, list = pendingStages } = {}) {
+  assert(version, `Staging ${name} requires the version to stage`);
   const pending = list(name);
-  if (pending.length) throw new Error(`Pending staged promotion for ${name}: ${pending.map(item => `${item.version} (${item.id}, ${item.status})`).join(', ')}; approve or reject it in npm Staged Packages first`);
-  console.log(`${name}: the earlier stage was settled; staging it again as a new package`);
+  const same = pending.filter(item => item.version === version);
+  if (same.length) throw new Error(`Pending staged promotion for ${name}@${version}: ${same.map(item => `${item.id} (${item.status})`).join(', ')}; approve or reject it in npm Staged Packages first`);
+  const older = pending.map(item => `${item.version} (${item.id}, ${item.status})`);
+  console.log(`${name}: staging ${version} as a new package${older.length ? `; still awaiting a decision in npm Staged Packages: ${older.join(', ')}` : ''}`);
   return null;
 }
