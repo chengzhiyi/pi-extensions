@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { stageArchive, validateStageReceipt } from './staging.mjs';
+import { pendingStages, restageAfterRejection, stageArchive, validateStageReceipt } from './staging.mjs';
 
 const bytes = Buffer.from('exact fixture archive bytes');
 const item = { name: '@fixture/new-plugin', version: '0.1.0', fingerprint: 'fixture-content' };
@@ -95,4 +95,22 @@ test('CI retains exact artifacts and only syncs manifests after full publication
   assert.match(workflow, /id: release\n\s+run: pnpm release/);
   assert.match(workflow, /if: always\(\)\n\s+uses: actions\/upload-artifact@v4/);
   assert.match(workflow, /name: Sync confirmed release versions to main\n\s+if: steps.release.outputs.published == 'true'/);
+});
+
+test('a name is staged again only when npm shows no stage awaiting a decision', () => {
+  const name = '@fixture/new-plugin';
+  const queue = rows => () => JSON.stringify(rows);
+  const rejected = { id: 'a', packageName: name, version: '0.0.1', status: 'rejected' };
+  const staged = { id: 'b', packageName: name, version: '0.0.1', status: 'staged' };
+  const other = { id: 'c', packageName: '@fixture/other', version: '1.0.0', status: 'staged' };
+  let args;
+  assert.deepEqual(pendingStages(name, { execute: a => { args = a; return queue([rejected, other])(); } }), []);
+  assert.deepEqual(args, ['stage', 'list', name, '--json']);
+  assert.deepEqual(pendingStages(name, { execute: queue([rejected, staged]) }), [staged]);
+  // Unknown states count as pending; an unreadable queue stops the run.
+  assert.equal(pendingStages(name, { execute: queue([{ ...staged, status: 'reviewing' }]) }).length, 1);
+  assert.throws(() => pendingStages(name, { execute: queue({ error: 'E401' }) }), /JSON array/);
+  assert.throws(() => pendingStages(name, { execute: () => { throw new Error('E401'); } }), /E401/);
+  assert.equal(restageAfterRejection(name, { list: () => [] }), null);
+  assert.throws(() => restageAfterRejection(name, { list: () => [staged] }), /Pending staged promotion.*0\.0\.1 \(b, staged\)/);
 });

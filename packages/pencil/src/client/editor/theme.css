@@ -373,3 +373,9 @@ textarea[data-canvas-text-input] {
 }
 .op-play-state { display: inline-flex; align-items: center; gap: 0.25rem; color: var(--color-accent); font-weight: 500; }
 .op-play-state svg { width: 0.75rem; height: 0.75rem; }
+
+/* file drop target */
+.op-drop-hint {
+  position: absolute; inset: 0.5rem; z-index: 40; display: grid; place-items: center; pointer-events: none;
+  border: 2px dashed var(--color-accent); border-radius: 0.5rem; background: rgb(0 0 0 / 0.08); color: var(--color-surface); font-size: 0.8125rem;
+}

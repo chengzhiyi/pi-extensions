@@ -162,3 +162,90 @@ test('packaged backend: apply → inspect → undo → save .fig → reopen; hum
   console.log(JSON.stringify({ coldApplyMs: coldMs, figBytes: onDisk.length }));
   await rt.dispose();
 });
+
+test('packaged backend: open workspace .fig (reuse), import .fig/.pen/.drawio, chunked uploads, refuse bad files, migrate records', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'pencil-import-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const pkgRoot = join(dir, 'package'), cwd = join(dir, 'workspace');
+  await mkdir(cwd, { recursive: true });
+  await cp(new URL('../package.json', import.meta.url), join(pkgRoot, 'package.json'));
+  await cp(new URL('../dist/', import.meta.url), join(pkgRoot, 'dist'), { recursive: true });
+  const { createRuntime } = await import(join(pkgRoot, 'dist/runtime.js'));
+  const broker = fakeBroker(cwd);
+  const rt = await createRuntime({ pluginId: '@chengzhiyi/pi-pencil', version: '0', generation: 1, broker });
+  let n = 0;
+  const call = (kind, action, input) => rt.invoke({ requestId: `r${++n}`, generation: 1, scope: { cwd, workspaceId: 'w', sessionId: 's' }, kind, action, input });
+  const names = async (docId) => (await call('tool', 'inspect', { docId, depth: 4 })).nodes.map((x) => x.untrusted?.name).filter(Boolean);
+
+  // A design saved to the workspace, then opened from its path.
+  const made = JSON.parse((await call('tool', 'apply', { title: 'Login', ops: LOGIN })).content[0].text);
+  await call('action', 'save', { docId: made.docId, path: 'designs/login.fig' });
+  const again = await call('action', 'open', { path: './designs/login.fig' });
+  assert.equal(again.docId, made.docId, 'an already-open, unchanged file switches to its design');
+  assert.equal(again.reused, true);
+  await cp(join(cwd, 'designs/login.fig'), join(cwd, 'designs/copy.fig'));
+  const opened = await call('action', 'open', { path: 'designs/copy.fig' });
+  assert.notEqual(opened.docId, made.docId);
+  assert.equal(opened.title, 'copy');
+  assert.ok((await names(opened.docId)).includes('Email'));
+  const got = await call('action', 'get', { docId: opened.docId });
+  assert.equal(got.savedRev, got.rev, 'a freshly opened file counts as saved');
+  assert.equal(got.path, 'designs/copy.fig');
+  await assert.rejects(call('action', 'open', { path: 'designs/missing.fig' }), (e) => e.reason === 'file_not_found');
+  await assert.rejects(call('action', 'open', { path: 'notes.txt' }), (e) => e.reason === 'invalid_input');
+  await writeFile(join(cwd, 'designs/broken.fig'), 'not a fig');
+  await assert.rejects(call('action', 'open', { path: 'designs/broken.fig' }), (e) => e.reason === 'invalid_file');
+  await assert.rejects(call('tool', 'import', { name: 'x.fig', data: 'AA==' }), (e) => e.reason === 'human_only');
+
+  // Import from the person's computer: a .fig round-trips; other formats go through OpenPencil's readers.
+  const figBytes = await readFile(join(cwd, 'designs/login.fig'));
+  const fig = await call('action', 'import', { name: 'Old Login.fig', data: figBytes.toString('base64') });
+  assert.equal(fig.title, 'Old Login');
+  assert.ok((await names(fig.docId)).includes('Primary button'));
+  assert.equal((await call('action', 'get', { docId: fig.docId })).path, null, 'an import has no workspace path until saved');
+  const savedImport = await call('action', 'save', { docId: fig.docId });
+  assert.equal(savedImport.path, 'designs/Old-Login.fig');
+
+  const pen = { version: '2.6', children: [{ type: 'frame', id: 'card', name: 'Card', x: 0, y: 0, width: 240, height: 120, fill: '#4F46E5', children: [{ type: 'text', id: 'hi', name: 'Greeting', content: 'Hello', fill: '#FFFFFF' }] }] };
+  const penDoc = await call('action', 'import', { name: 'card.pen', data: Buffer.from(JSON.stringify(pen)).toString('base64') });
+  const penNames = await names(penDoc.docId);
+  assert.ok(penNames.includes('Card') && penNames.includes('Greeting'), `pen layers: ${penNames}`);
+
+  const drawio = '<mxfile><diagram name="Flow"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="2" value="Start" style="rounded=1;fillColor=#dae8fc;" vertex="1" parent="1"><mxGeometry x="20" y="20" width="120" height="60" as="geometry"/></mxCell></root></mxGraphModel></diagram></mxfile>';
+  const flow = await call('action', 'import', { name: 'flow.drawio', data: Buffer.from(drawio).toString('base64') });
+  assert.ok(flow.nodes > 0, 'draw.io diagram has nodes');
+
+  // Mermaid needs elkjs for layout, which is not bundled: refused up front, not half-read.
+  await assert.rejects(call('action', 'import', { name: 'steps.mmd', data: Buffer.from('flowchart TD\n  A --> B\n').toString('base64') }), (e) => e.reason === 'unsupported_format');
+
+  await assert.rejects(call('action', 'import', { name: 'photo.png', data: 'AA==' }), (e) => e.reason === 'unsupported_format' && /\.pen/.test(e.message));
+  await assert.rejects(call('action', 'import', { name: 'broken.pen', data: Buffer.from('{"nope":1}').toString('base64') }), (e) => e.reason === 'invalid_file');
+  await assert.rejects(call('action', 'import', { name: 'empty.fig', data: '' }), (e) => e.reason === 'too_large');
+
+  // Inputs over the host's 2 MB action limit arrive as upload chunks, then the action names the upload.
+  const big = JSON.stringify({ name: 'Big card.pen', data: Buffer.from(JSON.stringify(pen) + ' '.repeat(3 * 1024 * 1024)).toString('base64') });
+  const size = 512 * 1024, total = Math.ceil(big.length / size), uploadId = 'up-0000-big';
+  for (let index = total - 1; index >= 0; index--) await call('action', 'upload', { id: uploadId, index, total, data: big.slice(index * size, (index + 1) * size) });
+  const chunked = await call('action', 'import', { $upload: uploadId });
+  assert.equal(chunked.title, 'Big card');
+  await assert.rejects(call('action', 'import', { $upload: uploadId }), (e) => e.reason === 'upload_missing', 'an upload is used once');
+  await call('action', 'upload', { id: 'up-0000-part', index: 0, total: 2, data: '{"name":' });
+  await assert.rejects(call('action', 'import', { $upload: 'up-0000-part' }), (e) => e.reason === 'upload_missing', 'an incomplete upload is refused');
+  await call('action', 'upload', { id: 'up-0000-other', index: 0, total: 1, data: '{}' });
+  await assert.rejects(rt.invoke({ requestId: 'x1', generation: 1, scope: { cwd, workspaceId: 'w', sessionId: 'someone-else' }, kind: 'action', action: 'import', input: { $upload: 'up-0000-other' } }), (e) => e.reason === 'upload_missing', 'only the uploading session can use it');
+  await assert.rejects(call('action', 'upload', { id: 'up-0000-many', index: 0, total: 65, data: 'x' }), (e) => e.reason === 'invalid_input');
+  await assert.rejects(call('tool', 'upload', { id: 'up-0000-tool', index: 0, total: 1, data: '{}' }), (e) => e.reason === 'human_only');
+
+  // Stored records: an early schema-1 record without newer fields still loads; a newer schema is refused, not rewritten.
+  const raw = await broker.call('state.read', { key: `design.${made.docId}`, scope: 'workspace' });
+  const { batches, savedRev, schema, ...early } = raw.value;
+  await broker.call('state.compareAndSwap', { key: `design.${made.docId}`, scope: 'workspace', expectedRevision: raw.revision, value: early });
+  const early1 = await call('action', 'get', { docId: made.docId });
+  assert.equal(early1.savedRev, null);
+  await call('action', 'rename', { docId: made.docId, title: 'Login v1' });
+  assert.equal((await broker.call('state.read', { key: `design.${made.docId}`, scope: 'workspace' })).value.schema, 1, 'a migrated record is written at the current schema');
+  const now = await broker.call('state.read', { key: `design.${made.docId}`, scope: 'workspace' });
+  await broker.call('state.compareAndSwap', { key: `design.${made.docId}`, scope: 'workspace', expectedRevision: now.revision, value: { ...now.value, schema: 99 } });
+  await assert.rejects(call('action', 'get', { docId: made.docId }), (e) => e.reason === 'schema_newer');
+  assert.ok(!(await call('action', 'list', {})).some((d) => d.docId === made.docId), 'a newer record is left out of the list');
+  assert.equal((await broker.call('state.read', { key: `design.${made.docId}`, scope: 'workspace' })).value.schema, 99, 'and left untouched');
+});

@@ -80,6 +80,20 @@ test('npm staged placeholders fail closed and cannot initialize publication or a
   }
 });
 
+test('a staging run may treat a placeholder-only name as new, but never a name with real versions', async () => {
+  const placeholder = { version: '0.0.0-stage', stub: true };
+  const only = { 'dist-tags': { latest: placeholder.version }, versions: { [placeholder.version]: placeholder } };
+  const asked = [];
+  const restage = async name => { asked.push(name); return null; };
+  assert.equal(await readPublishedPackage('@test/protocol', async () => Response.json(only), { onPlaceholder: restage }), null);
+  assert.deepEqual(asked, ['@test/protocol']);
+  await assert.rejects(readPublishedPackage('@test/protocol', async () => Response.json(only), {
+    onPlaceholder: () => { throw new Error('Pending staged promotion for @test/protocol: 0.1.0'); } }), /Pending staged promotion/);
+  const mixed = { 'dist-tags': { latest: placeholder.version }, versions: { ...only.versions, '0.1.0': { version: '0.1.0' } } };
+  await assert.rejects(readPublishedPackage('@test/protocol', async () => Response.json(mixed), { onPlaceholder: restage }), /Pending staged promotion/);
+  assert.deepEqual(asked, ['@test/protocol']);
+});
+
 test('release lookup revalidates metadata instead of accepting a cached pre-publication 404', async () => {
   const metadata = { 'dist-tags': { latest: '0.1.0' }, versions: {
     '0.1.0': { version: '0.1.0', piRelease: { fingerprint: 'confirmed' } },

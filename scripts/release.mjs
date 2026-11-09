@@ -34,7 +34,7 @@ export function planReleases(packages, published) {
     const fingerprint = digest([pkg.fingerprint, dependencyVersions]);
     const latest = published[name];
     parts(pkg.manifest.version);
-    if (latest?.stub || latest?.version === '0.0.0-stage') throw new Error(`Pending staged promotion for ${name}; inspect the existing stage, never republish its placeholder`);
+    if (isStagePlaceholder(latest)) throw new Error(`Pending staged promotion for ${name}; inspect the existing stage, never republish its placeholder`);
     if (latest) parts(latest.version);
     const publish = !latest || latest.piRelease?.fingerprint !== fingerprint || newer(pkg.manifest.version, latest.version);
     let version = latest?.version ?? pkg.manifest.version;
@@ -52,7 +52,15 @@ export function planReleases(packages, published) {
   return [...planned.values()];
 }
 
-export async function readPublishedPackage(name, request = fetch) {
+/** npm's stand-in while a first version waits in Staged Packages; it stays after that stage is rejected. */
+export const isStagePlaceholder = version => Boolean(version?.stub || version?.version === '0.0.0-stage');
+
+/**
+ * The package's latest published version, or null for a name with nothing published. A name
+ * whose latest is npm's stage placeholder fails closed unless `onPlaceholder` decides: an
+ * explicit staging run passes one that returns null (stage again) only once nothing is pending.
+ */
+export async function readPublishedPackage(name, request = fetch, { onPlaceholder = null } = {}) {
   // npm edges can retain the 404 from before a first publish, or an older
   // version list. Release planning and confirmation must see fresh metadata.
   const url = new URL(`https://registry.npmjs.org/${encodeURIComponent(name)}`);
@@ -63,7 +71,11 @@ export async function readPublishedPackage(name, request = fetch) {
   const metadata = await response.json();
   const latest = metadata.versions?.[metadata['dist-tags']?.latest];
   if (!latest) throw new Error(`Registry package ${name} has no usable latest version`);
-  if (latest.stub || latest.version === '0.0.0-stage') throw new Error(`Pending staged promotion for ${name}; the registry placeholder is not a published plugin`);
+  if (isStagePlaceholder(latest)) {
+    const real = Object.values(metadata.versions).filter(version => !isStagePlaceholder(version));
+    if (!onPlaceholder || real.length) throw new Error(`Pending staged promotion for ${name}; the registry placeholder is not a published plugin`);
+    return onPlaceholder(name);
+  }
   const highestVersion = Object.keys(metadata.versions).filter(version => /^\d+\.\d+\.\d+$/.test(version))
     .reduce((highest, version) => newer(version, highest) ? version : highest, latest.version);
   return { ...latest, highestVersion };

@@ -12,9 +12,13 @@ export async function publishingReadiness(names, { lookup = readPublishedPackage
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const packages = await readWorkspace(process.cwd());
+  const stageNewPackages = process.env.GITHUB_EVENT_NAME === 'workflow_dispatch' && process.env.CI_STAGE_NEW_PACKAGES === 'true';
   const { ready, missing } = await publishingReadiness(packages.map(pkg => pkg.manifest.name), {
     hasToken: Boolean(process.env.NPM_TOKEN),
-    stageNewPackages: process.env.GITHUB_EVENT_NAME === 'workflow_dispatch' && process.env.CI_STAGE_NEW_PACKAGES === 'true',
+    stageNewPackages,
+    // A staging run counts a placeholder-only name as new here; the publish job reads npm's
+    // stage queue (it has the credentials) and stops if a stage is still pending.
+    ...(stageNewPackages ? { lookup: name => readPublishedPackage(name, fetch, { onPlaceholder: () => null }) } : {}),
   });
   if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `ready=${ready}\n`);
   if (!ready) {
