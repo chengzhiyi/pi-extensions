@@ -7,7 +7,7 @@ import { setTimeout } from 'node:timers/promises';
 import { packWorkspace, verifyInstallation } from './pack.mjs';
 import { planReleases, readPublishedPackage } from './release.mjs';
 import { readWorkspace } from './workspace.mjs';
-import { stageArchive } from './staging.mjs';
+import { restageAfterRejection, stageArchive } from './staging.mjs';
 
 function matches(item, published) {
   return published?.version === item.version && published.piRelease?.fingerprint === item.fingerprint;
@@ -66,7 +66,10 @@ export async function runRelease(mode, root = process.cwd()) {
       'Automated publishing is restricted to GitHub Actions on main');
   }
   const packages = await readWorkspace(root);
-  const published = Object.fromEntries(await Promise.all(packages.map(async pkg => [pkg.manifest.name, await readPublishedPackage(pkg.manifest.name)])));
+  // Only an explicit staging run may stage a name again after its earlier stage was rejected.
+  const restage = mode === '--publish' && process.env.GITHUB_EVENT_NAME === 'workflow_dispatch' && process.env.CI_STAGE_NEW_PACKAGES === 'true';
+  const lookup = name => readPublishedPackage(name, fetch, restage ? { onPlaceholder: restageAfterRejection } : {});
+  const published = Object.fromEntries(await Promise.all(packages.map(async pkg => [pkg.manifest.name, await lookup(pkg.manifest.name)])));
   const plan = planReleases(packages, published);
   console.table(plan.map(item => ({ package: item.name, version: item.version, action: item.publish ? 'publish' : 'unchanged' })));
   if (mode === '--plan') return plan;
