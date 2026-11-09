@@ -97,7 +97,7 @@ test('CI retains exact artifacts and only syncs manifests after full publication
   assert.match(workflow, /name: Sync confirmed release versions to main\n\s+if: steps.release.outputs.published == 'true'/);
 });
 
-test('a name is staged again only when npm shows no stage awaiting a decision', () => {
+test('a version is staged unless that same version is already awaiting a decision', () => {
   const name = '@fixture/new-plugin';
   const queue = rows => () => JSON.stringify(rows);
   const rejected = { id: 'a', packageName: name, version: '0.0.1', status: 'rejected' };
@@ -111,6 +111,9 @@ test('a name is staged again only when npm shows no stage awaiting a decision', 
   assert.equal(pendingStages(name, { execute: queue([{ ...staged, status: 'reviewing' }]) }).length, 1);
   assert.throws(() => pendingStages(name, { execute: queue({ error: 'E401' }) }), /JSON array/);
   assert.throws(() => pendingStages(name, { execute: () => { throw new Error('E401'); } }), /E401/);
-  assert.equal(restageAfterRejection(name, { list: () => [] }), null);
-  assert.throws(() => restageAfterRejection(name, { list: () => [staged] }), /Pending staged promotion.*0\.0\.1 \(b, staged\)/);
+  assert.equal(restageAfterRejection(name, { version: '0.0.2', list: () => [] }), null);
+  // npm holds several staged versions of one package; an older pending stage does not block a new one.
+  assert.equal(restageAfterRejection(name, { version: '0.0.2', list: () => [staged] }), null);
+  assert.throws(() => restageAfterRejection(name, { version: '0.0.1', list: () => [staged] }), /Pending staged promotion for @fixture\/new-plugin@0\.0\.1: b \(staged\)/);
+  assert.throws(() => restageAfterRejection(name, { list: () => [] }), /requires the version/);
 });

@@ -66,10 +66,11 @@ export async function runRelease(mode, root = process.cwd()) {
       'Automated publishing is restricted to GitHub Actions on main');
   }
   const packages = await readWorkspace(root);
-  // Only an explicit staging run may stage a name again after its earlier stage was rejected.
+  // Only an explicit staging run may stage a name that npm shows only as its placeholder.
   const restage = mode === '--publish' && process.env.GITHUB_EVENT_NAME === 'workflow_dispatch' && process.env.CI_STAGE_NEW_PACKAGES === 'true';
-  const lookup = name => readPublishedPackage(name, fetch, restage ? { onPlaceholder: restageAfterRejection } : {});
-  const published = Object.fromEntries(await Promise.all(packages.map(async pkg => [pkg.manifest.name, await lookup(pkg.manifest.name)])));
+  const lookup = pkg => readPublishedPackage(pkg.manifest.name, fetch,
+    restage ? { onPlaceholder: name => restageAfterRejection(name, { version: pkg.manifest.version }) } : {});
+  const published = Object.fromEntries(await Promise.all(packages.map(async pkg => [pkg.manifest.name, await lookup(pkg)])));
   const plan = planReleases(packages, published);
   console.table(plan.map(item => ({ package: item.name, version: item.version, action: item.publish ? 'publish' : 'unchanged' })));
   if (mode === '--plan') return plan;
