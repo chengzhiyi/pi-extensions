@@ -53,3 +53,26 @@ export async function stageArchive(item, archive, { source, destination, runId, 
     throw error;
   }
 }
+
+/** Stage states that no longer hold a version for promotion; any other state counts as pending. */
+const SETTLED_STAGES = new Set(['rejected', 'expired', 'cancelled', 'canceled', 'withdrawn']);
+
+/** The name's stages still awaiting a decision in npm Staged Packages (read only). */
+export function pendingStages(name, {
+  execute = args => execFileSync('npm', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'], timeout: 60000 }),
+} = {}) {
+  const items = JSON.parse(execute(['stage', 'list', name, '--json']));
+  assert(Array.isArray(items), 'Expected npm stage list JSON array');
+  return items.filter(item => item.packageName === name && !SETTLED_STAGES.has(String(item.status).toLowerCase()));
+}
+
+/**
+ * For an explicit staging run: a name showing only npm's placeholder may be staged again once its
+ * earlier stage was rejected. Anything still pending, or an unreadable queue, stops the run.
+ */
+export function restageAfterRejection(name, { list = pendingStages } = {}) {
+  const pending = list(name);
+  if (pending.length) throw new Error(`Pending staged promotion for ${name}: ${pending.map(item => `${item.version} (${item.id}, ${item.status})`).join(', ')}; approve or reject it in npm Staged Packages first`);
+  console.log(`${name}: the earlier stage was settled; staging it again as a new package`);
+  return null;
+}
